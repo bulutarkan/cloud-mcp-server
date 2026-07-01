@@ -1,0 +1,851 @@
+from __future__ import annotations
+
+import json, time, uuid, os
+from typing import Any, Dict, List, Optional
+
+from fastapi import HTTPException, status
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+
+from .security import RateLimiter, Settings, load_settings, setup_audit_logger, truncate
+from .oauth import (
+    authorize_get, authorize_post_handler, token_handler, verify_token,
+    register_client_handler,
+)
+from .tools import (
+    run_command, process_list, kill_process, get_system_info,
+    write_file, write_files_batch, read_file, read_multiple_files,
+    edit_file, move_file, copy_file, delete_path,
+    list_directory, directory_tree, create_directory, get_file_info, find_files,
+    search_files, http_request,
+)
+from .tools_jobs import (
+    start_background_job, get_job_status, get_job_output,
+    stop_job, list_jobs, wait_jobs, run_commands_parallel,
+)
+
+
+def _log(audit_logger, tool: str, fn):
+    start = time.perf_counter()
+    outcome = "ok"
+    try:
+        return fn()
+    except HTTPException as exc:
+        outcome = f"error:{exc.status_code}"
+        raise
+    except Exception as exc:
+        outcome = f"error:500:{exc}"
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+    finally:
+        ms = int((time.perf_counter() - start) * 1000)
+        audit_logger.info(json.dumps({"tool": tool, "outcome": outcome, "duration_ms": ms}))
+
+
+def create_app():
+    settings = load_settings()
+    limiter = RateLimiter(settings.rate_limit_per_minute)
+    audit_logger = setup_audit_logger()
+    base_url = settings.base_url
+
+    mcp = FastMCP(
+        name=os.getenv("MCP_SERVER_NAME", "cloud-mcp-server"),
+        instructions=os.getenv(
+            "MCP_INSTRUCTIONS",
+            "You are connected to this Linux server through Cloud MCP. "
+            "You can run shell commands, inspect system health, manage files, and execute background jobs."
+        ),
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+    _api_key = os.getenv("MCP_API_KEY", "")
+
+    class AuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            path = request.url.path
+
+            # OAuth endpoints — no auth needed
+            if path in {"/oauth/authorize", "/oauth/token", "/health"}:
+                return await call_next(request)
+
+            # HEAD /mcp — needed by ChatGPT connector probe
+            if request.method == "HEAD" and path == "/mcp":
+                return Response(status_code=200, headers={
+                    "content-type": "text/event-stream; charset=utf-8",
+                    "mcp-session-id": uuid.uuid4().hex,
+                })
+
+            # MCP endpoints — Nginx-validated key OR API key OR Bearer token
+            if path.startswith("/mcp"):
+                # Nginx-validated: /claude-mcp requests rewritten by Nginx after key check
+                if request.headers.get("x-claude-key-validated") == "true":
+                    return await call_next(request)
+
+                # Direct API key check (query param or header) — skips OAuth entirely
+                req_key = (
+                    request.query_params.get("apiKey")
+                    or request.headers.get("x-api-key")
+                )
+                if req_key and _api_key and req_key == _api_key:
+                    return await call_next(request)
+
+                try:
+                    verify_token(request.headers.get("authorization"))
+                    ip = request.headers.get("x-forwarded-for", "unknown").split(",")[0]
+                    limiter.check(ip)
+                except HTTPException as exc:
+                    resp = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+                    # Claude connector expects WWW-Authenticate on 401 to infer Bearer auth.
+                    if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+                        detail = str(exc.detail)
+                        err = "invalid_request" if "Missing Authorization" in detail else "invalid_token"
+                        resp.headers["WWW-Authenticate"] = (
+                            f'Bearer realm="mcp", error="{err}", error_description="{detail}"'
+                        )
+                    return resp
+
+            return await call_next(request)
+
+    # ── Terminal tools ──────────────────────────────────────────────────────
+    @mcp.tool(name="run_command",
+              description="Run any shell command on the Oracle Cloud Linux server (bash).")
+    def _run_command(command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "run_command",
+                    lambda: run_command(settings, command=command, timeout_s=timeout_s))
+
+    @mcp.tool(name="process_list", description="List running processes. Optional name filter.")
+    def _process_list(filter: Optional[str] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "process_list", lambda: process_list(settings, filter=filter))
+
+    @mcp.tool(name="kill_process", description="Kill a process by PID. signal: TERM or KILL.")
+    def _kill_process(pid: int, signal: str = "TERM") -> Dict[str, Any]:
+        return _log(audit_logger, "kill_process",
+                    lambda: kill_process(settings, pid=pid, signal=signal))
+
+    @mcp.tool(name="get_system_info",
+              description="Get server info: CPU, memory, disk, network, uptime.")
+    def _get_system_info() -> Dict[str, Any]:
+        return _log(audit_logger, "get_system_info", lambda: get_system_info(settings))
+
+    @mcp.tool(name="health_check",
+              description="Run a quick Linux server health check: CPU, memory, disk, network, uptime.")
+    def _health_check() -> Dict[str, Any]:
+        return _log(audit_logger, "health_check", lambda: get_system_info(settings))
+
+    @mcp.tool(name="start_background_job",
+              description="Start a long-running shell command on the Oracle Cloud Linux server and return immediately with job_id. Use for installs, builds, tests, downloads, dev servers and docker commands.")
+    def _start_background_job(command: str, cwd: Optional[str] = None,
+                              env: Optional[Dict[str, str]] = None,
+                              timeout_s: Optional[int] = None,
+                              no_output_timeout_s: Optional[int] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "start_background_job",
+                    lambda: start_background_job(settings, command=command, cwd=cwd, env=env,
+                                                 timeout_s=timeout_s, no_output_timeout_s=no_output_timeout_s))
+
+    @mcp.tool(name="get_job_status", description="Get status for a background job by job_id.")
+    def _get_job_status(job_id: str) -> Dict[str, Any]:
+        return _log(audit_logger, "get_job_status",
+                    lambda: get_job_status(settings, job_id=job_id))
+
+    @mcp.tool(name="get_job_output",
+              description="Read stdout/stderr for a background job. Use since_offset for incremental output or tail_lines for recent logs.")
+    def _get_job_output(job_id: str, tail_lines: Optional[int] = None,
+                        since_offset: Optional[int] = None, stream: str = "both") -> Dict[str, Any]:
+        return _log(audit_logger, "get_job_output",
+                    lambda: get_job_output(settings, job_id=job_id, tail_lines=tail_lines,
+                                           since_offset=since_offset, stream=stream))
+
+    @mcp.tool(name="stop_job", description="Stop a background job by job_id. signal: TERM, KILL, INT, HUP.")
+    def _stop_job(job_id: str, signal: str = "TERM") -> Dict[str, Any]:
+        return _log(audit_logger, "stop_job",
+                    lambda: stop_job(settings, job_id=job_id, signal_name=signal))
+
+    @mcp.tool(name="list_jobs",
+              description="List background jobs. status_filter can be running, stalled, completed, failed, timeout, killed.")
+    def _list_jobs(status_filter: Optional[str] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "list_jobs",
+                    lambda: list_jobs(settings, status_filter=status_filter))
+
+    @mcp.tool(name="wait_jobs", description="Wait for background jobs to finish, optionally returning output.")
+    def _wait_jobs(job_ids: List[str], timeout_s: Optional[int] = None,
+                   return_output: bool = False) -> Dict[str, Any]:
+        return _log(audit_logger, "wait_jobs",
+                    lambda: wait_jobs(settings, job_ids=job_ids, timeout_s=timeout_s,
+                                      return_output=return_output))
+
+    @mcp.tool(name="run_commands_parallel",
+              description="Run multiple shell commands in parallel on the Oracle Cloud Linux server and collect results.")
+    def _run_commands_parallel(commands: List[str], cwd: Optional[str] = None,
+                               timeout_s: Optional[int] = None,
+                               return_output: bool = True) -> Dict[str, Any]:
+        return _log(audit_logger, "run_commands_parallel",
+                    lambda: run_commands_parallel(settings, commands=commands, cwd=cwd,
+                                                  timeout_s=timeout_s, return_output=return_output))
+
+    # ── File tools ──────────────────────────────────────────────────────────
+    @mcp.tool(name="write_file", description="Write content to a file on the server.")
+    def _write_file(path: str, content: str) -> Dict[str, Any]:
+        return _log(audit_logger, "write_file",
+                    lambda: write_file(settings, path=path, content=content))
+
+    @mcp.tool(name="write_files_batch",
+              description="Write multiple files in one call. Pass a list of objects with 'path' and 'content'.")
+    def _write_files_batch(files: List[Dict[str, str]]) -> Dict[str, Any]:
+        return _log(audit_logger, "write_files_batch",
+                    lambda: write_files_batch(settings, files=files))
+
+    @mcp.tool(name="read_file", description="Read a file. offset/length for pagination.")
+    def _read_file(path: str, offset: int = 0, length: Optional[int] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "read_file",
+                    lambda: read_file(settings, path=path, offset=offset, length=length))
+
+    @mcp.tool(name="read_multiple_files", description="Read multiple files in one call.")
+    def _read_multiple_files(paths: List[str]) -> Dict[str, Any]:
+        return _log(audit_logger, "read_multiple_files",
+                    lambda: read_multiple_files(settings, paths=paths))
+
+    @mcp.tool(name="edit_file",
+              description="Find-and-replace in a file. Fails if count != expected_replacements.")
+    def _edit_file(path: str, old_string: str, new_string: str,
+                   expected_replacements: int = 1) -> Dict[str, Any]:
+        return _log(audit_logger, "edit_file",
+                    lambda: edit_file(settings, path=path, old_string=old_string,
+                                      new_string=new_string, expected_replacements=expected_replacements))
+
+    @mcp.tool(name="move_file", description="Move or rename a file or directory.")
+    def _move_file(source: str, destination: str) -> Dict[str, Any]:
+        return _log(audit_logger, "move_file",
+                    lambda: move_file(settings, source=source, destination=destination))
+
+    @mcp.tool(name="copy_file", description="Copy a file or directory.")
+    def _copy_file(source: str, destination: str) -> Dict[str, Any]:
+        return _log(audit_logger, "copy_file",
+                    lambda: copy_file(settings, source=source, destination=destination))
+
+    @mcp.tool(name="delete_path",
+              description="Delete a file or directory. Set recursive=true for directories.")
+    def _delete_path(path: str, recursive: bool = False) -> Dict[str, Any]:
+        return _log(audit_logger, "delete_path",
+                    lambda: delete_path(settings, path=path, recursive=recursive))
+
+    @mcp.tool(name="list_directory", description="List files and directories at a path.")
+    def _list_directory(path: str) -> Dict[str, Any]:
+        return _log(audit_logger, "list_directory",
+                    lambda: list_directory(settings, path=path))
+
+    @mcp.tool(name="directory_tree", description="Show directory structure as a tree.")
+    def _directory_tree(path: str, depth: int = 3) -> Dict[str, Any]:
+        return _log(audit_logger, "directory_tree",
+                    lambda: directory_tree(settings, path=path, depth=depth))
+
+    @mcp.tool(name="create_directory", description="Create a directory.")
+    def _create_directory(path: str) -> Dict[str, Any]:
+        return _log(audit_logger, "create_directory",
+                    lambda: create_directory(settings, path=path))
+
+    @mcp.tool(name="get_file_info", description="Get file/directory metadata.")
+    def _get_file_info(path: str) -> Dict[str, Any]:
+        return _log(audit_logger, "get_file_info",
+                    lambda: get_file_info(settings, path=path))
+
+    @mcp.tool(name="find_files",
+              description="Find files by glob pattern. file_type: file|dir|any.")
+    def _find_files(pattern: str, path: str = "/home/ubuntu",
+                    file_type: str = "any") -> Dict[str, Any]:
+        return _log(audit_logger, "find_files",
+                    lambda: find_files(settings, pattern=pattern, path=path, file_type=file_type))
+
+    @mcp.tool(name="search_files",
+              description="Search file contents with grep. include_extensions e.g. ['py','js'].")
+    def _search_files(pattern: str, path: str = "/home/ubuntu",
+                      include_extensions: Optional[List[str]] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "search_files",
+                    lambda: search_files(settings, pattern=pattern, path=path,
+                                         include_extensions=include_extensions))
+
+    @mcp.tool(name="http_request",
+              description="Make HTTP GET/POST/PUT/DELETE requests to external URLs.")
+    def _http_request(url: str, method: str = "GET",
+                      headers: Optional[Dict[str, str]] = None,
+                      body: Optional[str] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "http_request",
+                    lambda: http_request(settings, url=url, method=method,
+                                         headers=headers, body=body))
+
+    # ── App assembly ────────────────────────────────────────────────────────
+    app = mcp.streamable_http_app()
+    app.add_middleware(AuthMiddleware)
+
+    # OAuth2 routes
+    async def oauth_authorize(request: Request):
+        if request.method == "GET":
+            return authorize_get(request)
+        return await authorize_post_handler(request)
+
+    async def oauth_token(request: Request):
+        return await token_handler(request)
+
+    async def health(_: Request):
+        return JSONResponse({
+            "ok": True, "server": os.getenv("MCP_SERVER_NAME", "cloud-mcp-server"),
+            "base_url": base_url,
+            "oauth_authorize": f"{base_url}/oauth/authorize",
+            "oauth_token": f"{base_url}/oauth/token",
+        })
+
+    # OpenID Connect discovery (ChatGPT connector needs this)
+    async def openid_config(_: Request):
+        return JSONResponse({
+            "issuer": base_url,
+            "authorization_endpoint": f"{base_url}/oauth/authorize",
+            "token_endpoint": f"{base_url}/oauth/token",
+            "jwks_uri": f"{base_url}/.well-known/jwks.json",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post"],
+            "scopes_supported": ["openid", "claudeai"],
+        })
+
+    async def jwks(_: Request):
+        return JSONResponse({"keys": []})
+
+    async def oauth_server_meta(_: Request):
+        return JSONResponse({
+            "issuer": base_url,
+            "authorization_endpoint": f"{base_url}/oauth/authorize",
+            "token_endpoint": f"{base_url}/oauth/token",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post"],
+            "code_challenge_methods_supported": ["S256"],
+            "resource_indicators_supported": True,
+            "scopes_supported": ["claudeai"],
+            "registration_endpoint": f"{base_url}/register",
+        })
+
+    # OAuth 2.0 Protected Resource Metadata (RFC 9728)
+    # Claude connector probes this to learn how to send the access token to /mcp.
+    async def protected_resource_meta(_: Request):
+        return JSONResponse({
+            "resource": f"{base_url}/mcp",
+            "authorization_servers": [base_url],
+            "bearer_methods_supported": ["header"],
+            "jwks_uri": f"{base_url}/.well-known/jwks.json",
+        })
+
+    # Some clients probe /.well-known/oauth-protected-resource/mcp
+    async def protected_resource_meta_mcp(_: Request):
+        return await protected_resource_meta(_)
+
+
+    app.router.routes += [
+        Route("/oauth/authorize", oauth_authorize, methods=["GET", "POST"]),
+        Route("/authorize", oauth_authorize, methods=["GET", "POST"]),
+        Route("/oauth/token", oauth_token, methods=["POST"]),
+        Route("/token", oauth_token, methods=["POST"]),
+        Route("/health", health, methods=["GET"]),
+        Route("/.well-known/openid-configuration", openid_config, methods=["GET"]),
+        Route("/.well-known/oauth-authorization-server", oauth_server_meta, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource", protected_resource_meta, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource/mcp", protected_resource_meta_mcp, methods=["GET"]),
+        Route("/.well-known/jwks.json", jwks, methods=["GET"]),
+        Route("/register", register_client_handler, methods=["POST"]),
+    ]
+
+    # ── Simple REST API for CustomGPT Actions ──────────────────────────────
+    _rest_api_key = os.getenv("MCP_API_KEY", "")
+
+    async def api_auth(request: Request):
+        auth_header = request.headers.get("authorization", "")
+        bearer_key = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_key = auth_header.split(" ", 1)[1].strip()
+        elif auth_header.lower().startswith("apikey "):
+            bearer_key = auth_header.split(" ", 1)[1].strip()
+        elif auth_header and " " not in auth_header:
+            bearer_key = auth_header.strip()
+
+        key = (
+            request.headers.get("x-api-key")
+            or request.headers.get("api-key")
+            or request.query_params.get("apiKey")
+            or bearer_key
+        )
+        if not key or key != _rest_api_key:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
+
+    async def _body(request: Request):
+        try:
+            return await request.json()
+        except Exception:
+            return {}
+
+    async def api_run(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        command = b.get("command", "").strip()
+        if not command:
+            return JSONResponse({"error": "command is required"}, status_code=400)
+        return JSONResponse(run_command(settings, command=command, timeout_s=b.get("timeout_s")))
+
+    async def api_process_list(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        return JSONResponse(process_list(settings, filter=b.get("filter")))
+
+    async def api_kill_process(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        pid = b.get("pid")
+        if not pid:
+            return JSONResponse({"error": "pid is required"}, status_code=400)
+        return JSONResponse(kill_process(settings, pid=int(pid), signal=b.get("signal", "TERM")))
+
+    async def api_system_info(request: Request):
+        await api_auth(request)
+        return JSONResponse(get_system_info(settings))
+
+    async def api_health_check(request: Request):
+        await api_auth(request)
+        return JSONResponse(get_system_info(settings))
+
+    async def api_jobs_start(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        command = b.get("command", "").strip()
+        if not command:
+            return JSONResponse({"error": "command is required"}, status_code=400)
+        return JSONResponse(start_background_job(settings, command=command, cwd=b.get("cwd"), env=b.get("env"),
+                                                timeout_s=b.get("timeout_s"), no_output_timeout_s=b.get("no_output_timeout_s")))
+
+    async def api_jobs_status(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        job_id = b.get("job_id", "").strip()
+        if not job_id:
+            return JSONResponse({"error": "job_id is required"}, status_code=400)
+        return JSONResponse(get_job_status(settings, job_id=job_id))
+
+    async def api_jobs_output(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        job_id = b.get("job_id", "").strip()
+        if not job_id:
+            return JSONResponse({"error": "job_id is required"}, status_code=400)
+        return JSONResponse(get_job_output(settings, job_id=job_id, tail_lines=b.get("tail_lines"),
+                                          since_offset=b.get("since_offset"), stream=b.get("stream", "both")))
+
+    async def api_jobs_stop(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        job_id = b.get("job_id", "").strip()
+        if not job_id:
+            return JSONResponse({"error": "job_id is required"}, status_code=400)
+        return JSONResponse(stop_job(settings, job_id=job_id, signal_name=b.get("signal", "TERM")))
+
+    async def api_jobs_list(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        return JSONResponse(list_jobs(settings, status_filter=b.get("status_filter")))
+
+    async def api_jobs_wait(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        job_ids = b.get("job_ids", [])
+        if not job_ids:
+            return JSONResponse({"error": "job_ids is required"}, status_code=400)
+        return JSONResponse(wait_jobs(settings, job_ids=job_ids, timeout_s=b.get("timeout_s"),
+                                     return_output=b.get("return_output", False)))
+
+    async def api_run_parallel(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        commands = b.get("commands", [])
+        if not commands:
+            return JSONResponse({"error": "commands is required"}, status_code=400)
+        return JSONResponse(run_commands_parallel(settings, commands=commands, cwd=b.get("cwd"),
+                                                 timeout_s=b.get("timeout_s"),
+                                                 return_output=b.get("return_output", True)))
+
+    async def api_read_file(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(read_file(settings, path=path, offset=b.get("offset", 0), length=b.get("length")))
+
+    async def api_read_multiple_files(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        paths = b.get("paths", [])
+        if not paths:
+            return JSONResponse({"error": "paths is required"}, status_code=400)
+        return JSONResponse(read_multiple_files(settings, paths=paths))
+
+    async def api_write_file(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(write_file(settings, path=path, content=b.get("content", "")))
+
+    async def api_write_files_batch(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        files = b.get("files", [])
+        if not files:
+            return JSONResponse({"error": "files is required"}, status_code=400)
+        return JSONResponse(write_files_batch(settings, files=files))
+
+    async def api_edit_file(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path or "old_string" not in b or "new_string" not in b:
+            return JSONResponse({"error": "path, old_string, new_string required"}, status_code=400)
+        return JSONResponse(edit_file(settings, path=path, old_string=b["old_string"], new_string=b["new_string"], expected_replacements=b.get("expected_replacements", 1)))
+
+    async def api_move_file(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        if not b.get("source") or not b.get("destination"):
+            return JSONResponse({"error": "source and destination required"}, status_code=400)
+        return JSONResponse(move_file(settings, source=b["source"], destination=b["destination"]))
+
+    async def api_copy_file(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        if not b.get("source") or not b.get("destination"):
+            return JSONResponse({"error": "source and destination required"}, status_code=400)
+        return JSONResponse(copy_file(settings, source=b["source"], destination=b["destination"]))
+
+    async def api_delete_path(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(delete_path(settings, path=path, recursive=b.get("recursive", False)))
+
+    async def api_list_dir(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        return JSONResponse(list_directory(settings, path=b.get("path", "/home/ubuntu")))
+
+    async def api_directory_tree(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(directory_tree(settings, path=path, depth=b.get("depth", 3)))
+
+    async def api_create_directory(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(create_directory(settings, path=path))
+
+    async def api_get_file_info(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        path = b.get("path", "").strip()
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        return JSONResponse(get_file_info(settings, path=path))
+
+    async def api_find_files(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        pattern = b.get("pattern", "").strip()
+        if not pattern:
+            return JSONResponse({"error": "pattern is required"}, status_code=400)
+        return JSONResponse(find_files(settings, pattern=pattern, path=b.get("path", "/home/ubuntu"), file_type=b.get("file_type", "any")))
+
+    async def api_search_files(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        pattern = b.get("pattern", "").strip()
+        if not pattern:
+            return JSONResponse({"error": "pattern is required"}, status_code=400)
+        return JSONResponse(search_files(settings, pattern=pattern, path=b.get("path", "/home/ubuntu"), include_extensions=b.get("include_extensions")))
+
+    async def api_http_request(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        url = b.get("url", "").strip()
+        if not url:
+            return JSONResponse({"error": "url is required"}, status_code=400)
+        return JSONResponse(http_request(settings, url=url, method=b.get("method", "GET"), headers=b.get("headers"), body=b.get("body")))
+
+    # ── WordPress & Zoho CRM proxy endpoints ───────────────────────────────
+    import httpx as _httpx
+
+    async def _sse_mcp_call(client, url, payload, extra_headers=None):
+        """SSE tabanlı MCP sunucuya istek at, ilk data: yanıtını döndür."""
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if extra_headers:
+            headers.update(extra_headers)
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    return __import__("json").loads(line[5:].strip())
+        return {}
+
+    _WP_URL = os.getenv("WP_MCP_URL", "")
+    _WP_USER = os.getenv("WP_MCP_USERNAME", "")
+    _WP_PASS = os.getenv("WP_MCP_PASSWORD", "")
+    _ZOHO_URL = os.getenv("ZOHO_MCP_URL", "")
+
+    async def api_wp_call(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        tool = b.get("tool", "").strip()
+        if not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+                   "params": {"name": tool, "arguments": b.get("params", {})}}
+        try:
+            if not _WP_URL:
+                return JSONResponse({"error": "WP_MCP_URL is not configured"}, status_code=501)
+            auth = (_WP_USER, _WP_PASS) if _WP_USER and _WP_PASS else None
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(_WP_URL, auth=auth, json=payload)
+            return JSONResponse(resp.json())
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_zoho_call(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        tool = b.get("tool", "").strip()
+        if not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+                   "params": {"name": tool, "arguments": b.get("params", {})}}
+        try:
+            if not _ZOHO_URL:
+                return JSONResponse({"error": "ZOHO_MCP_URL is not configured"}, status_code=501)
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(_ZOHO_URL, json=payload)
+            return JSONResponse(resp.json())
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    _EXA_URL = os.getenv("EXA_MCP_URL", "https://mcp.exa.ai/mcp")
+    _TAVILY_URL = os.getenv("TAVILY_MCP_URL", "")
+    _N8N_URL = os.getenv("N8N_MCP_URL", "")
+
+    async def api_exa_call(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        tool = b.get("tool", "").strip()
+        if not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        args = b.get("params") or {k: v for k, v in b.items() if k != "tool"}
+        payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+                   "params": {"name": tool, "arguments": args}}
+        try:
+            async with _httpx.AsyncClient(timeout=30) as client:
+                result = await _sse_mcp_call(client, _EXA_URL, payload)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_tavily_call(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        tool = b.get("tool", "").strip()
+        if not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        args = b.get("params") or {k: v for k, v in b.items() if k != "tool"}
+        payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+                   "params": {"name": tool, "arguments": args}}
+        try:
+            if not _TAVILY_URL:
+                return JSONResponse({"error": "TAVILY_MCP_URL is not configured"}, status_code=501)
+            async with _httpx.AsyncClient(timeout=30) as client:
+                result = await _sse_mcp_call(client, _TAVILY_URL, payload)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def _n8n_dispatch(tool_name: str, arguments: dict):
+        if not _N8N_URL:
+            return {"error": "N8N_MCP_URL is not configured"}
+        sse_hdrs = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        async with _httpx.AsyncClient(timeout=60) as client:
+            init_resp = await client.post(_N8N_URL, headers=sse_hdrs,
+                json={"jsonrpc":"2.0","method":"initialize","id":1,"params":{
+                    "protocolVersion":"2024-11-05","capabilities":{},
+                    "clientInfo":{"name":"proxy","version":"1"}}})
+            session_id = init_resp.headers.get("mcp-session-id","")
+            return await _sse_mcp_call(client, _N8N_URL,
+                {"jsonrpc":"2.0","method":"tools/call","id":2,
+                 "params":{"name":tool_name,"arguments":arguments}},
+                {"mcp-session-id": session_id})
+
+    async def api_n8n_call(request: Request):
+        """Generic /api/n8n — geriye dönük uyumluluk"""
+        await api_auth(request)
+        b = await _body(request)
+        tool = b.get("tool", "").strip()
+        if not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        try:
+            result = await _n8n_dispatch(tool, b.get("params", {}))
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_check_mail(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("check_mail_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_send_mail(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("send_mail_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_get_events(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("get_events_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_create_event(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("create_event_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_update_event(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("update_event_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_facebook_report(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("facebook_report_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_check_spreadsheet(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("check_spreadsheet_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_google_analytics(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("google_analytics_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_google_search_console(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("google_search_console_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    async def api_news(request: Request):
+        await api_auth(request)
+        b = await _body(request)
+        try:
+            result = await _n8n_dispatch("news_api_tool", b)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    app.router.routes += [
+        Route("/api/run", api_run, methods=["POST"]),
+        Route("/api/process_list", api_process_list, methods=["POST"]),
+        Route("/api/kill_process", api_kill_process, methods=["POST"]),
+        Route("/api/system_info", api_system_info, methods=["POST"]),
+        Route("/api/health_check", api_health_check, methods=["POST"]),
+        Route("/api/jobs/start", api_jobs_start, methods=["POST"]),
+        Route("/api/jobs/status", api_jobs_status, methods=["POST"]),
+        Route("/api/jobs/output", api_jobs_output, methods=["POST"]),
+        Route("/api/jobs/stop", api_jobs_stop, methods=["POST"]),
+        Route("/api/jobs/list", api_jobs_list, methods=["POST"]),
+        Route("/api/jobs/wait", api_jobs_wait, methods=["POST"]),
+        Route("/api/run_parallel", api_run_parallel, methods=["POST"]),
+        Route("/api/read_file", api_read_file, methods=["POST"]),
+        Route("/api/read_multiple_files", api_read_multiple_files, methods=["POST"]),
+        Route("/api/write_file", api_write_file, methods=["POST"]),
+        Route("/api/write_files_batch", api_write_files_batch, methods=["POST"]),
+        Route("/api/edit_file", api_edit_file, methods=["POST"]),
+        Route("/api/move_file", api_move_file, methods=["POST"]),
+        Route("/api/copy_file", api_copy_file, methods=["POST"]),
+        Route("/api/delete_path", api_delete_path, methods=["POST"]),
+        Route("/api/list_dir", api_list_dir, methods=["POST"]),
+        Route("/api/directory_tree", api_directory_tree, methods=["POST"]),
+        Route("/api/create_directory", api_create_directory, methods=["POST"]),
+        Route("/api/get_file_info", api_get_file_info, methods=["POST"]),
+        Route("/api/find_files", api_find_files, methods=["POST"]),
+        Route("/api/search_files", api_search_files, methods=["POST"]),
+        Route("/api/http_request", api_http_request, methods=["POST"]),
+        Route("/api/wp", api_wp_call, methods=["POST"]),
+        Route("/api/zoho", api_zoho_call, methods=["POST"]),
+        Route("/api/exa", api_exa_call, methods=["POST"]),
+        Route("/api/tavily", api_tavily_call, methods=["POST"]),
+        Route("/api/n8n", api_n8n_call, methods=["POST"]),
+        Route("/api/n8n/check_mail", api_check_mail, methods=["POST"]),
+        Route("/api/n8n/send_mail", api_send_mail, methods=["POST"]),
+        Route("/api/n8n/get_events", api_get_events, methods=["POST"]),
+        Route("/api/n8n/create_event", api_create_event, methods=["POST"]),
+        Route("/api/n8n/update_event", api_update_event, methods=["POST"]),
+        Route("/api/n8n/facebook_report", api_facebook_report, methods=["POST"]),
+        Route("/api/n8n/check_spreadsheet", api_check_spreadsheet, methods=["POST"]),
+        Route("/api/n8n/google_analytics", api_google_analytics, methods=["POST"]),
+        Route("/api/n8n/google_search_console", api_google_search_console, methods=["POST"]),
+        Route("/api/n8n/news", api_news, methods=["POST"]),
+    ]
+
+    return app
+
+
+app = create_app()

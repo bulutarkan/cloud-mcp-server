@@ -1,0 +1,473 @@
+openapi: 3.1.1
+info:
+  title: Cloud MCP Server
+  version: 1.0.0
+servers:
+  - url: https://mcp.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+security:
+  - ApiKeyAuth: []
+paths:
+  /api/run:
+    post:
+      operationId: run_command
+      x-openai-isConsequential: false
+      summary: Run a shell command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command: { type: string }
+                timeout_s: { type: integer }
+              required: [command]
+      responses:
+        '200': { description: Command output }
+  /api/system_info:
+    post:
+      operationId: get_system_info
+      x-openai-isConsequential: false
+      summary: Get CPU, RAM, disk, uptime and network information
+      responses:
+        '200': { description: System information }
+  /api/health_check:
+    post:
+      operationId: health_check
+      x-openai-isConsequential: false
+      summary: Run a quick Linux health check
+      responses:
+        '200': { description: Health check output }
+  /api/process_list:
+    post:
+      operationId: process_list
+      x-openai-isConsequential: false
+      summary: List running processes
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filter: { type: string }
+      responses:
+        '200': { description: Process list }
+  /api/kill_process:
+    post:
+      operationId: kill_process
+      x-openai-isConsequential: true
+      summary: Kill a process by PID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pid: { type: integer }
+                signal: { type: string, enum: [TERM, KILL, HUP, INT] }
+              required: [pid]
+      responses:
+        '200': { description: Result }
+  /api/read_file:
+    post:
+      operationId: read_file
+      x-openai-isConsequential: false
+      summary: Read a file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+                offset: { type: integer }
+                length: { type: integer }
+              required: [path]
+      responses:
+        '200': { description: File content }
+  /api/read_multiple_files:
+    post:
+      operationId: read_multiple_files
+      x-openai-isConsequential: false
+      summary: Read multiple files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paths:
+                  type: array
+                  items: { type: string }
+              required: [paths]
+      responses:
+        '200': { description: File contents }
+  /api/write_file:
+    post:
+      operationId: write_file
+      x-openai-isConsequential: true
+      summary: Write a file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+                content: { type: string }
+              required: [path, content]
+      responses:
+        '200': { description: Result }
+  /api/write_files_batch:
+    post:
+      operationId: write_files_batch
+      x-openai-isConsequential: true
+      summary: Write multiple files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      path: { type: string }
+                      content: { type: string }
+                    required: [path, content]
+              required: [files]
+      responses:
+        '200': { description: Result }
+  /api/edit_file:
+    post:
+      operationId: edit_file
+      x-openai-isConsequential: true
+      summary: Find and replace text in a file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+                old_string: { type: string }
+                new_string: { type: string }
+                expected_replacements: { type: integer }
+              required: [path, old_string, new_string]
+      responses:
+        '200': { description: Result }
+  /api/move_file:
+    post:
+      operationId: move_file
+      x-openai-isConsequential: true
+      summary: Move or rename a file or directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source: { type: string }
+                destination: { type: string }
+              required: [source, destination]
+      responses:
+        '200': { description: Result }
+  /api/copy_file:
+    post:
+      operationId: copy_file
+      x-openai-isConsequential: true
+      summary: Copy a file or directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source: { type: string }
+                destination: { type: string }
+              required: [source, destination]
+      responses:
+        '200': { description: Result }
+  /api/delete_path:
+    post:
+      operationId: delete_path
+      x-openai-isConsequential: true
+      summary: Delete a file or directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+                recursive: { type: boolean }
+              required: [path]
+      responses:
+        '200': { description: Result }
+  /api/list_dir:
+    post:
+      operationId: list_directory
+      x-openai-isConsequential: false
+      summary: List a directory
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+      responses:
+        '200': { description: Directory listing }
+  /api/directory_tree:
+    post:
+      operationId: directory_tree
+      x-openai-isConsequential: false
+      summary: Show a directory tree
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+                depth: { type: integer }
+              required: [path]
+      responses:
+        '200': { description: Directory tree }
+  /api/create_directory:
+    post:
+      operationId: create_directory
+      x-openai-isConsequential: true
+      summary: Create a directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+              required: [path]
+      responses:
+        '200': { description: Result }
+  /api/get_file_info:
+    post:
+      operationId: get_file_info
+      x-openai-isConsequential: false
+      summary: Get file or directory metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: { type: string }
+              required: [path]
+      responses:
+        '200': { description: Metadata }
+  /api/find_files:
+    post:
+      operationId: find_files
+      x-openai-isConsequential: false
+      summary: Find files by glob pattern
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pattern: { type: string }
+                path: { type: string }
+                file_type: { type: string, enum: [any, file, dir] }
+              required: [pattern]
+      responses:
+        '200': { description: Search results }
+  /api/search_files:
+    post:
+      operationId: search_files
+      x-openai-isConsequential: false
+      summary: Search file contents with grep
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pattern: { type: string }
+                path: { type: string }
+                include_extensions:
+                  type: array
+                  items: { type: string }
+              required: [pattern]
+      responses:
+        '200': { description: Search results }
+  /api/http_request:
+    post:
+      operationId: http_request
+      x-openai-isConsequential: false
+      summary: Make an outbound HTTP request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string }
+                method: { type: string }
+                headers: { type: object }
+                body: { type: string }
+              required: [url]
+      responses:
+        '200': { description: HTTP response }
+  /api/jobs/start:
+    post:
+      operationId: start_background_job
+      x-openai-isConsequential: true
+      summary: Start a long-running command and return a job ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command: { type: string }
+                cwd: { type: string }
+                env: { type: object, additionalProperties: { type: string } }
+                timeout_s: { type: integer }
+                no_output_timeout_s: { type: integer }
+              required: [command]
+      responses:
+        '200': { description: Job info }
+  /api/jobs/status:
+    post:
+      operationId: get_job_status
+      x-openai-isConsequential: false
+      summary: Get background job status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string }
+              required: [job_id]
+      responses:
+        '200': { description: Job status }
+  /api/jobs/output:
+    post:
+      operationId: get_job_output
+      x-openai-isConsequential: false
+      summary: Get background job stdout and stderr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string }
+                tail_lines: { type: integer }
+                since_offset: { type: integer }
+                stream: { type: string, enum: [stdout, stderr, both] }
+              required: [job_id]
+      responses:
+        '200': { description: Job output }
+  /api/jobs/stop:
+    post:
+      operationId: stop_job
+      x-openai-isConsequential: true
+      summary: Stop a background job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string }
+                signal: { type: string, enum: [TERM, KILL, INT, HUP] }
+              required: [job_id]
+      responses:
+        '200': { description: Result }
+  /api/jobs/list:
+    post:
+      operationId: list_jobs
+      x-openai-isConsequential: false
+      summary: List background jobs
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status_filter: { type: string }
+      responses:
+        '200': { description: Job list }
+  /api/jobs/wait:
+    post:
+      operationId: wait_jobs
+      x-openai-isConsequential: false
+      summary: Wait for background jobs to finish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_ids:
+                  type: array
+                  items: { type: string }
+                timeout_s: { type: integer }
+                return_output: { type: boolean }
+              required: [job_ids]
+      responses:
+        '200': { description: Job statuses }
+  /api/run_parallel:
+    post:
+      operationId: run_commands_parallel
+      x-openai-isConsequential: true
+      summary: Run multiple shell commands in parallel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commands:
+                  type: array
+                  items: { type: string }
+                cwd: { type: string }
+                timeout_s: { type: integer }
+                return_output: { type: boolean }
+              required: [commands]
+      responses:
+        '200': { description: Parallel command results }
