@@ -132,18 +132,96 @@ curl https://mcp.yourdomain.com/health
 
 ## Custom GPT setup
 
+OpenAI Actions need two things: authentication details and an OpenAPI schema. This repository includes the schema at `examples/openapi.yaml`.
+
+### 1. Configure `.env` on your server
+
+Open your server env file:
+
+```bash
+nano /home/ubuntu/cloud-mcp-server/mcp_server/.env
+```
+
+Set at least these values:
+
+```env
+BASE_URL=https://mcp.yourdomain.com
+MCP_API_KEY=replace_with_a_long_random_api_key
+OAUTH_CLIENT_SECRET=replace_with_oauth_client_secret
+OAUTH_MASTER_PASSWORD=replace_with_master_password
+SERVER_HOME=/home/ubuntu
+```
+
+Generate strong values with:
+
+```bash
+openssl rand -hex 32
+```
+
+`MCP_API_KEY` is the key your Custom GPT will send with every `/api/*` request. Keep it private.
+
+### 2. Configure authentication in the Custom GPT Action
+
 In ChatGPT:
 
 1. Create or edit your GPT.
 2. Go to **Actions**.
 3. Create a new action.
-4. Authentication: choose **API Key**.
-5. Auth type: **Bearer** or **Custom header**.
-   - Bearer: use your `MCP_API_KEY`.
-   - Custom header: header name `x-api-key`, value your `MCP_API_KEY`.
-6. Paste `examples/openapi.yaml` into the schema editor.
-7. Replace every `https://mcp.example.com` with your real `BASE_URL`.
-8. Test `/api/health_check` first.
+4. Under **Authentication**, choose **API Key**.
+5. Use this setup:
+   - **Auth type:** `Custom`
+   - **Custom Header Name:** `x-api-key`
+   - **API Key:** paste the exact value of `MCP_API_KEY` from `mcp_server/.env`
+
+Alternative setup if the UI shows Bearer authentication instead:
+
+- **Auth type:** `Bearer`
+- **API Key:** paste the same `MCP_API_KEY`
+
+The server accepts both `x-api-key: YOUR_KEY` and `Authorization: Bearer YOUR_KEY` for the REST API.
+
+### 3. Add the OpenAPI schema
+
+Open:
+
+```bash
+examples/openapi.yaml
+```
+
+In the schema, replace only this server URL:
+
+```yaml
+servers:
+  - url: https://mcp.example.com
+```
+
+with your real public URL:
+
+```yaml
+servers:
+  - url: https://mcp.yourdomain.com
+```
+
+Then paste the whole schema into the Custom GPT Action schema editor.
+
+### 4. What users usually need to change
+
+For a basic Linux server assistant, users usually change only:
+
+1. `BASE_URL` in `mcp_server/.env`
+2. `MCP_API_KEY` in `mcp_server/.env`
+3. The `servers[0].url` value in `examples/openapi.yaml`
+4. The Custom GPT Action authentication key, using the same `MCP_API_KEY`
+
+Optional integrations such as WordPress, Zoho, Exa, Tavily, and n8n require their own `.env` variables. Leave them empty if you do not use them.
+
+### 5. Test the Action
+
+Test `/api/health_check` first. Then test `/api/run` with:
+
+```json
+{"command":"pwd && whoami && hostname && date"}
+```
 
 A good GPT instruction starter:
 

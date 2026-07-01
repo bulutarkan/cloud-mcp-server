@@ -2,14 +2,19 @@ openapi: 3.1.1
 info:
   title: Cloud MCP Server
   version: 1.0.0
+  description: |
+    OpenAPI schema for connecting a Custom GPT Action to a self-hosted Cloud MCP Linux server bridge.
+    Replace the server URL with your own public HTTPS endpoint and configure API key authentication.
 servers:
   - url: https://mcp.example.com
+    description: Replace this with your own BASE_URL, for example https://mcp.yourdomain.com.
 components:
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
       in: header
       name: x-api-key
+      description: Use the same value as MCP_API_KEY in mcp_server/.env.
 security:
   - ApiKeyAuth: []
 paths:
@@ -18,6 +23,7 @@ paths:
       operationId: run_command
       x-openai-isConsequential: false
       summary: Run a shell command
+      description: Run a shell command on the connected Linux server.
       requestBody:
         required: true
         content:
@@ -25,30 +31,23 @@ paths:
             schema:
               type: object
               properties:
-                command: { type: string }
-                timeout_s: { type: integer }
+                command: { type: string, description: Shell command to run. }
+                timeout_s: { type: integer, description: Optional timeout in seconds. }
               required: [command]
-      responses:
-        '200': { description: Command output }
+      responses: { '200': { description: Command output } }
   /api/system_info:
     post:
       operationId: get_system_info
       x-openai-isConsequential: false
-      summary: Get CPU, RAM, disk, uptime and network information
-      responses:
-        '200': { description: System information }
-  /api/health_check:
-    post:
-      operationId: health_check
-      x-openai-isConsequential: false
-      summary: Run a quick Linux health check
-      responses:
-        '200': { description: Health check output }
+      summary: Get system information
+      description: Get CPU, RAM, disk, uptime, hostname, and network information.
+      responses: { '200': { description: System information } }
   /api/process_list:
     post:
       operationId: process_list
       x-openai-isConsequential: false
       summary: List running processes
+      description: List running Linux processes, optionally filtered by keyword.
       requestBody:
         required: false
         content:
@@ -56,14 +55,14 @@ paths:
             schema:
               type: object
               properties:
-                filter: { type: string }
-      responses:
-        '200': { description: Process list }
+                filter: { type: string, description: Optional process name or keyword filter. }
+      responses: { '200': { description: Process list } }
   /api/kill_process:
     post:
       operationId: kill_process
       x-openai-isConsequential: true
-      summary: Kill a process by PID
+      summary: Kill a process
+      description: Send a signal to a process by PID. Use carefully.
       requestBody:
         required: true
         content:
@@ -71,16 +70,16 @@ paths:
             schema:
               type: object
               properties:
-                pid: { type: integer }
-                signal: { type: string, enum: [TERM, KILL, HUP, INT] }
+                pid: { type: integer, description: Process ID to kill. }
+                signal: { type: string, description: Signal name such as TERM, KILL, HUP, or INT. }
               required: [pid]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/read_file:
     post:
       operationId: read_file
       x-openai-isConsequential: false
       summary: Read a file
+      description: Read a file from the Linux server. Use offset and length for line-based pagination.
       requestBody:
         required: true
         content:
@@ -88,17 +87,17 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-                offset: { type: integer }
-                length: { type: integer }
+                path: { type: string, description: File path to read. }
+                offset: { type: integer, description: Optional starting line offset. }
+                length: { type: integer, description: Optional number of lines to read. }
               required: [path]
-      responses:
-        '200': { description: File content }
+      responses: { '200': { description: File content } }
   /api/read_multiple_files:
     post:
       operationId: read_multiple_files
       x-openai-isConsequential: false
       summary: Read multiple files
+      description: Read multiple files from the Linux server in one request.
       requestBody:
         required: true
         content:
@@ -108,15 +107,16 @@ paths:
               properties:
                 paths:
                   type: array
+                  description: File paths to read.
                   items: { type: string }
               required: [paths]
-      responses:
-        '200': { description: File contents }
+      responses: { '200': { description: File contents } }
   /api/write_file:
     post:
       operationId: write_file
       x-openai-isConsequential: true
       summary: Write a file
+      description: Write content to a file on the Linux server.
       requestBody:
         required: true
         content:
@@ -124,16 +124,16 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-                content: { type: string }
+                path: { type: string, description: Destination file path. }
+                content: { type: string, description: File content to write. }
               required: [path, content]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/write_files_batch:
     post:
       operationId: write_files_batch
       x-openai-isConsequential: true
       summary: Write multiple files
+      description: Write multiple files in one request.
       requestBody:
         required: true
         content:
@@ -150,13 +150,13 @@ paths:
                       content: { type: string }
                     required: [path, content]
               required: [files]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/edit_file:
     post:
       operationId: edit_file
       x-openai-isConsequential: true
-      summary: Find and replace text in a file
+      summary: Find and replace in a file
+      description: Replace an exact string in a file. Can enforce the expected replacement count.
       requestBody:
         required: true
         content:
@@ -164,18 +164,18 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-                old_string: { type: string }
-                new_string: { type: string }
-                expected_replacements: { type: integer }
+                path: { type: string, description: File path to edit. }
+                old_string: { type: string, description: Exact text to find. }
+                new_string: { type: string, description: Replacement text. }
+                expected_replacements: { type: integer, description: Expected replacement count. }
               required: [path, old_string, new_string]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/move_file:
     post:
       operationId: move_file
       x-openai-isConsequential: true
-      summary: Move or rename a file or directory
+      summary: Move or rename a file
+      description: Move or rename a file or directory.
       requestBody:
         required: true
         content:
@@ -183,16 +183,16 @@ paths:
             schema:
               type: object
               properties:
-                source: { type: string }
-                destination: { type: string }
+                source: { type: string, description: Source path. }
+                destination: { type: string, description: Destination path. }
               required: [source, destination]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/copy_file:
     post:
       operationId: copy_file
       x-openai-isConsequential: true
-      summary: Copy a file or directory
+      summary: Copy a file
+      description: Copy a file or directory.
       requestBody:
         required: true
         content:
@@ -200,16 +200,16 @@ paths:
             schema:
               type: object
               properties:
-                source: { type: string }
-                destination: { type: string }
+                source: { type: string, description: Source path. }
+                destination: { type: string, description: Destination path. }
               required: [source, destination]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/delete_path:
     post:
       operationId: delete_path
       x-openai-isConsequential: true
       summary: Delete a file or directory
+      description: Delete a file or directory. Set recursive to true for directories.
       requestBody:
         required: true
         content:
@@ -217,16 +217,16 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-                recursive: { type: boolean }
+                path: { type: string, description: Path to delete. }
+                recursive: { type: boolean, description: Required for directories. }
               required: [path]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/list_dir:
     post:
       operationId: list_directory
       x-openai-isConsequential: false
       summary: List a directory
+      description: List files and directories at a path.
       requestBody:
         required: false
         content:
@@ -234,14 +234,14 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-      responses:
-        '200': { description: Directory listing }
+                path: { type: string, description: Directory path. Defaults to SERVER_HOME. }
+      responses: { '200': { description: Directory listing } }
   /api/directory_tree:
     post:
       operationId: directory_tree
       x-openai-isConsequential: false
       summary: Show a directory tree
+      description: Return a nested directory tree for a path.
       requestBody:
         required: true
         content:
@@ -249,16 +249,16 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
-                depth: { type: integer }
+                path: { type: string, description: Directory path. }
+                depth: { type: integer, description: Maximum depth. }
               required: [path]
-      responses:
-        '200': { description: Directory tree }
+      responses: { '200': { description: Directory tree } }
   /api/create_directory:
     post:
       operationId: create_directory
       x-openai-isConsequential: true
       summary: Create a directory
+      description: Create a directory, including parent directories when needed.
       requestBody:
         required: true
         content:
@@ -266,15 +266,15 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
+                path: { type: string, description: Directory path to create. }
               required: [path]
-      responses:
-        '200': { description: Result }
+      responses: { '200': { description: Result } }
   /api/get_file_info:
     post:
       operationId: get_file_info
       x-openai-isConsequential: false
-      summary: Get file or directory metadata
+      summary: Get file information
+      description: Get metadata for a file or directory.
       requestBody:
         required: true
         content:
@@ -282,15 +282,15 @@ paths:
             schema:
               type: object
               properties:
-                path: { type: string }
+                path: { type: string, description: File or directory path. }
               required: [path]
-      responses:
-        '200': { description: Metadata }
+      responses: { '200': { description: Metadata } }
   /api/find_files:
     post:
       operationId: find_files
       x-openai-isConsequential: false
       summary: Find files by glob pattern
+      description: Find files or directories using a glob pattern.
       requestBody:
         required: true
         content:
@@ -298,17 +298,17 @@ paths:
             schema:
               type: object
               properties:
-                pattern: { type: string }
-                path: { type: string }
-                file_type: { type: string, enum: [any, file, dir] }
+                pattern: { type: string, description: Glob pattern such as '*.py'. }
+                path: { type: string, description: Root path to search. }
+                file_type: { type: string, description: any, file, or dir. }
               required: [pattern]
-      responses:
-        '200': { description: Search results }
+      responses: { '200': { description: Search results } }
   /api/search_files:
     post:
       operationId: search_files
       x-openai-isConsequential: false
-      summary: Search file contents with grep
+      summary: Search inside files
+      description: Search file contents using grep-compatible text matching.
       requestBody:
         required: true
         content:
@@ -316,19 +316,20 @@ paths:
             schema:
               type: object
               properties:
-                pattern: { type: string }
-                path: { type: string }
+                pattern: { type: string, description: Text or regex pattern to search for. }
+                path: { type: string, description: Root path to search. }
                 include_extensions:
                   type: array
+                  description: Optional file extensions to include, such as ['py', 'js'].
                   items: { type: string }
               required: [pattern]
-      responses:
-        '200': { description: Search results }
+      responses: { '200': { description: Search results } }
   /api/http_request:
     post:
       operationId: http_request
       x-openai-isConsequential: false
-      summary: Make an outbound HTTP request
+      summary: Make an HTTP request
+      description: Make an outbound HTTP request from the server. Controlled by HTTP_ALLOWLIST and HTTP_HTTPS_ONLY.
       requestBody:
         required: true
         content:
@@ -336,18 +337,18 @@ paths:
             schema:
               type: object
               properties:
-                url: { type: string }
-                method: { type: string }
-                headers: { type: object }
-                body: { type: string }
+                url: { type: string, description: Target URL. }
+                method: { type: string, description: HTTP method. }
+                headers: { type: object, description: Optional HTTP headers. }
+                body: { type: string, description: Optional request body. }
               required: [url]
-      responses:
-        '200': { description: HTTP response }
-  /api/jobs/start:
+      responses: { '200': { description: HTTP response } }
+  /api/wp:
     post:
-      operationId: start_background_job
+      operationId: wordpress_call
       x-openai-isConsequential: true
-      summary: Start a long-running command and return a job ID
+      summary: Call a WordPress MCP tool
+      description: Optional proxy endpoint. Requires WP_MCP_URL and, if needed, WP_MCP_USERNAME/WP_MCP_PASSWORD in .env.
       requestBody:
         required: true
         content:
@@ -355,54 +356,16 @@ paths:
             schema:
               type: object
               properties:
-                command: { type: string }
-                cwd: { type: string }
-                env: { type: object, additionalProperties: { type: string } }
-                timeout_s: { type: integer }
-                no_output_timeout_s: { type: integer }
-              required: [command]
-      responses:
-        '200': { description: Job info }
-  /api/jobs/status:
+                tool: { type: string, description: WordPress MCP tool name. }
+                params: { type: object, description: Tool parameters. }
+              required: [tool]
+      responses: { '200': { description: Tool result } }
+  /api/zoho:
     post:
-      operationId: get_job_status
-      x-openai-isConsequential: false
-      summary: Get background job status
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                job_id: { type: string }
-              required: [job_id]
-      responses:
-        '200': { description: Job status }
-  /api/jobs/output:
-    post:
-      operationId: get_job_output
-      x-openai-isConsequential: false
-      summary: Get background job stdout and stderr
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                job_id: { type: string }
-                tail_lines: { type: integer }
-                since_offset: { type: integer }
-                stream: { type: string, enum: [stdout, stderr, both] }
-              required: [job_id]
-      responses:
-        '200': { description: Job output }
-  /api/jobs/stop:
-    post:
-      operationId: stop_job
+      operationId: zoho_crm_call
       x-openai-isConsequential: true
-      summary: Stop a background job
+      summary: Call a Zoho CRM MCP tool
+      description: Optional proxy endpoint. Requires ZOHO_MCP_URL in .env.
       requestBody:
         required: true
         content:
@@ -410,16 +373,80 @@ paths:
             schema:
               type: object
               properties:
-                job_id: { type: string }
-                signal: { type: string, enum: [TERM, KILL, INT, HUP] }
-              required: [job_id]
-      responses:
-        '200': { description: Result }
-  /api/jobs/list:
+                tool: { type: string, description: Zoho MCP tool name. }
+                params: { type: object, description: Tool parameters. }
+              required: [tool]
+      responses: { '200': { description: Tool result } }
+  /api/exa:
     post:
-      operationId: list_jobs
+      operationId: exa_call
       x-openai-isConsequential: false
-      summary: List background jobs
+      summary: Call an Exa MCP tool
+      description: Optional proxy endpoint for Exa MCP. Configure EXA_MCP_URL if needed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tool:
+                  type: string
+                  enum: [web_search_exa, company_research_exa, get_code_context_exa]
+                query: { type: string, description: Search query. }
+                companyName: { type: string, description: Company name. }
+                numResults: { type: number, description: Number of results. }
+                tokensNum: { type: number, description: Token count for code context. }
+                params: { type: object, description: Alternative object for tool arguments. }
+              required: [tool]
+      responses: { '200': { description: Tool result } }
+  /api/tavily:
+    post:
+      operationId: tavily_call
+      x-openai-isConsequential: false
+      summary: Call a Tavily MCP tool
+      description: Optional proxy endpoint. Requires TAVILY_MCP_URL in .env, including your Tavily API key if Tavily requires it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tool:
+                  type: string
+                  enum: [tavily_search, tavily_extract, tavily_crawl, tavily_map, tavily_research]
+                query: { type: string, description: Search query. }
+                url: { type: string, description: Target URL. }
+                urls:
+                  type: array
+                  items: { type: string }
+                params: { type: object, description: Alternative object for tool arguments. }
+              required: [tool]
+      responses: { '200': { description: Tool result } }
+  /api/n8n:
+    post:
+      operationId: n8n_call
+      x-openai-isConsequential: true
+      summary: Call a generic n8n MCP tool
+      description: Optional proxy endpoint. Requires N8N_MCP_URL in .env.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tool: { type: string, description: n8n MCP tool name. }
+                params: { type: object, description: Tool parameters. }
+              required: [tool]
+      responses: { '200': { description: Tool result } }
+  /api/n8n/check_mail:
+    post:
+      operationId: check_mail
+      x-openai-isConsequential: false
+      summary: Check email through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
       requestBody:
         required: false
         content:
@@ -427,14 +454,258 @@ paths:
             schema:
               type: object
               properties:
-                status_filter: { type: string }
-      responses:
-        '200': { description: Job list }
+                Limit: { type: number }
+                Search: { type: string }
+                Received_After: { type: string }
+                Sender: { type: string }
+      responses: { '200': { description: Email results } }
+  /api/n8n/send_mail:
+    post:
+      operationId: send_mail
+      x-openai-isConsequential: true
+      summary: Send email through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Subject: { type: string }
+                Message: { type: string }
+              required: [Subject, Message]
+      responses: { '200': { description: Send result } }
+  /api/n8n/get_events:
+    post:
+      operationId: get_events
+      x-openai-isConsequential: false
+      summary: Get calendar events through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Before: { type: string }
+      responses: { '200': { description: Calendar events } }
+  /api/n8n/create_event:
+    post:
+      operationId: create_event
+      x-openai-isConsequential: true
+      summary: Create a calendar event through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Start: { type: string }
+                End: { type: string }
+                Summary: { type: string }
+                Description: { type: string }
+                remindersValues0_Minutes_Before: { type: number }
+              required: [Start, End, Summary]
+      responses: { '200': { description: Create result } }
+  /api/n8n/update_event:
+    post:
+      operationId: update_event
+      x-openai-isConsequential: true
+      summary: Update a calendar event through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Event_ID: { type: string }
+                Start: { type: string }
+                End: { type: string }
+                Summary: { type: string }
+                Description: { type: string }
+              required: [Event_ID]
+      responses: { '200': { description: Update result } }
+  /api/n8n/facebook_report:
+    post:
+      operationId: facebook_report
+      x-openai-isConsequential: false
+      summary: Get a Facebook Ads report through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses: { '200': { description: Facebook Ads report } }
+  /api/n8n/check_spreadsheet:
+    post:
+      operationId: check_spreadsheet
+      x-openai-isConsequential: false
+      summary: Check a Google Spreadsheet through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Document: { type: string }
+                Sheet: { type: string }
+      responses: { '200': { description: Spreadsheet result } }
+  /api/n8n/google_analytics:
+    post:
+      operationId: google_analytics
+      x-openai-isConsequential: false
+      summary: Get a Google Analytics report through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses: { '200': { description: Analytics report } }
+  /api/n8n/google_search_console:
+    post:
+      operationId: google_search_console
+      x-openai-isConsequential: false
+      summary: Get a Google Search Console report through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses: { '200': { description: Search Console report } }
+  /api/n8n/news:
+    post:
+      operationId: news
+      x-openai-isConsequential: false
+      summary: Get news through n8n
+      description: Optional n8n proxy endpoint. Requires N8N_MCP_URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses: { '200': { description: News results } }
+  /api/health_check:
+    post:
+      operationId: health_check
+      x-openai-isConsequential: false
+      summary: Run a Linux server health check
+      description: Quick health check for hostname, uptime, CPU, RAM, disk, and network information.
+      responses: { '200': { description: Health check result } }
+  /api/jobs/start:
+    post:
+      operationId: start_background_job
+      x-openai-isConsequential: true
+      summary: Start a background job
+      description: Start a long-running shell command and immediately return a job_id. Use for installs, builds, tests, Docker, downloads, and dev servers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command: { type: string, description: Command to run. }
+                cwd: { type: string, description: Working directory. Defaults to SERVER_HOME. }
+                env:
+                  type: object
+                  description: Extra environment variables.
+                  additionalProperties: { type: string }
+                timeout_s: { type: integer, description: Optional total timeout. }
+                no_output_timeout_s: { type: integer, description: Mark as stalled if no output is seen for this many seconds. }
+              required: [command]
+      responses: { '200': { description: Started job information } }
+  /api/jobs/status:
+    post:
+      operationId: get_job_status
+      x-openai-isConsequential: false
+      summary: Get background job status
+      description: Get status for a background job by job_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string, description: Job ID. }
+              required: [job_id]
+      responses: { '200': { description: Job status } }
+  /api/jobs/output:
+    post:
+      operationId: get_job_output
+      x-openai-isConsequential: false
+      summary: Get background job output
+      description: Read stdout and stderr for a background job. Use since_offset for incremental output or tail_lines for recent output.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string, description: Job ID. }
+                tail_lines: { type: integer, description: Return only the last N lines. }
+                since_offset: { type: integer, description: Return output after this byte offset. }
+                stream: { type: string, description: stdout, stderr, or both. }
+              required: [job_id]
+      responses: { '200': { description: Job output and offsets } }
+  /api/jobs/stop:
+    post:
+      operationId: stop_job
+      x-openai-isConsequential: true
+      summary: Stop a background job
+      description: Stop a background job by job_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: { type: string, description: Job ID. }
+                signal: { type: string, description: TERM, KILL, INT, or HUP. Defaults to TERM. }
+              required: [job_id]
+      responses: { '200': { description: Stop result } }
+  /api/jobs/list:
+    post:
+      operationId: list_jobs
+      x-openai-isConsequential: false
+      summary: List background jobs
+      description: List background jobs. Optionally filter by status.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status_filter: { type: string, description: running, stalled, completed, failed, timeout, or killed. }
+      responses: { '200': { description: Job list } }
   /api/jobs/wait:
     post:
       operationId: wait_jobs
       x-openai-isConsequential: false
-      summary: Wait for background jobs to finish
+      summary: Wait for jobs
+      description: Wait for one or more background jobs to finish, optionally returning output.
       requestBody:
         required: true
         content:
@@ -444,17 +715,18 @@ paths:
               properties:
                 job_ids:
                   type: array
+                  description: Job IDs to wait for.
                   items: { type: string }
-                timeout_s: { type: integer }
-                return_output: { type: boolean }
+                timeout_s: { type: integer, description: Wait timeout. }
+                return_output: { type: boolean, description: Return stdout and stderr when true. }
               required: [job_ids]
-      responses:
-        '200': { description: Job statuses }
+      responses: { '200': { description: Job statuses } }
   /api/run_parallel:
     post:
       operationId: run_commands_parallel
       x-openai-isConsequential: true
-      summary: Run multiple shell commands in parallel
+      summary: Run commands in parallel
+      description: Run multiple shell commands in parallel and collect their results.
       requestBody:
         required: true
         content:
@@ -464,10 +736,10 @@ paths:
               properties:
                 commands:
                   type: array
+                  description: Commands to run in parallel.
                   items: { type: string }
-                cwd: { type: string }
-                timeout_s: { type: integer }
-                return_output: { type: boolean }
+                cwd: { type: string, description: Shared working directory. Defaults to SERVER_HOME. }
+                timeout_s: { type: integer, description: Timeout for each command. }
+                return_output: { type: boolean, description: Return stdout and stderr. Defaults to true. }
               required: [commands]
-      responses:
-        '200': { description: Parallel command results }
+      responses: { '200': { description: Parallel command results } }
