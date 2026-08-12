@@ -38,7 +38,7 @@ sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip nginx certbot python3-certbot-nginx
 
 cd /home/ubuntu
-git clone https://github.com/YOUR_GITHUB_USERNAME/cloud-mcp-server.git
+git clone https://github.com/bulutarkan/cloud-mcp-server.git
 cd cloud-mcp-server
 cp .env.example mcp_server/.env
 nano mcp_server/.env
