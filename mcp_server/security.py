@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, Request, status
 
 BASE_DIR = Path(__file__).resolve().parent
-HOME_DIR = Path(os.getenv("SERVER_HOME", str(Path.home())))
+HOME_DIR = Path("/home/ubuntu")
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -55,7 +55,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    shared = Path(os.getenv("SHARED_DIR", str(HOME_DIR / "Shared"))).expanduser()
+    shared = Path(os.getenv("SHARED_DIR", "/home/ubuntu/Shared")).expanduser()
     shared.mkdir(parents=True, exist_ok=True)
     return Settings(
         rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 1000),
@@ -67,7 +67,7 @@ def load_settings() -> Settings:
         http_https_only=_bool("HTTP_HTTPS_ONLY", False),
         http_max_response_bytes=_int("HTTP_MAX_RESPONSE_BYTES", 5_000_000),
         http_timeout_s=_int("HTTP_TIMEOUT_S", 60),
-        base_url=os.getenv("BASE_URL", "http://localhost:8000"),
+        base_url=os.getenv("BASE_URL", "https://mcp.tarkan.cloud"),
     )
 
 

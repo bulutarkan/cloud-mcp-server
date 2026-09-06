@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json, time, uuid, os
+import asyncio, json, time, uuid, os
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
@@ -19,7 +19,7 @@ from .oauth import (
 from .tools import (
     run_command, process_list, kill_process, get_system_info,
     write_file, write_files_batch, read_file, read_multiple_files,
-    edit_file, move_file, copy_file, delete_path,
+    edit_file, apply_patch, move_file, copy_file, delete_path,
     list_directory, directory_tree, create_directory, get_file_info, find_files,
     search_files, http_request,
 )
@@ -45,6 +45,11 @@ def _log(audit_logger, tool: str, fn):
         audit_logger.info(json.dumps({"tool": tool, "outcome": outcome, "duration_ms": ms}))
 
 
+async def _log_async(audit_logger, tool: str, fn):
+    """Run blocking tool implementations without blocking Uvicorn's event loop."""
+    return await asyncio.to_thread(_log, audit_logger, tool, fn)
+
+
 def create_app():
     settings = load_settings()
     limiter = RateLimiter(settings.rate_limit_per_minute)
@@ -52,11 +57,12 @@ def create_app():
     base_url = settings.base_url
 
     mcp = FastMCP(
-        name=os.getenv("MCP_SERVER_NAME", "cloud-mcp-server"),
-        instructions=os.getenv(
-            "MCP_INSTRUCTIONS",
-            "You are connected to this Linux server through Cloud MCP. "
-            "You can run shell commands, inspect system health, manage files, and execute background jobs."
+        name="tarkan-cloud-mcp",
+        instructions=(
+            "Tarkan'in Oracle Cloud sunucusunun AI asistanisin. "
+            "Ana dizin: /home/ubuntu. Shared klasor: /home/ubuntu/Shared (Mac ile senkron). "
+            "run_command ile her Linux komutunu calistirabilirsin. "
+            "Tam dosya sistemi erisimin var."
         ),
         streamable_http_path="/mcp",
         stateless_http=True,
@@ -114,28 +120,31 @@ def create_app():
     # ── Terminal tools ──────────────────────────────────────────────────────
     @mcp.tool(name="run_command",
               description="Run any shell command on the Oracle Cloud Linux server (bash).")
-    def _run_command(command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "run_command",
-                    lambda: run_command(settings, command=command, timeout_s=timeout_s))
+    async def _run_command(command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "run_command",
+                                lambda: run_command(settings, command=command, timeout_s=timeout_s))
 
     @mcp.tool(name="process_list", description="List running processes. Optional name filter.")
-    def _process_list(filter: Optional[str] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "process_list", lambda: process_list(settings, filter=filter))
+    async def _process_list(filter: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "process_list",
+                                lambda: process_list(settings, filter=filter))
 
     @mcp.tool(name="kill_process", description="Kill a process by PID. signal: TERM or KILL.")
-    def _kill_process(pid: int, signal: str = "TERM") -> Dict[str, Any]:
-        return _log(audit_logger, "kill_process",
-                    lambda: kill_process(settings, pid=pid, signal=signal))
+    async def _kill_process(pid: int, signal: str = "TERM") -> Dict[str, Any]:
+        return await _log_async(audit_logger, "kill_process",
+                                lambda: kill_process(settings, pid=pid, signal=signal))
 
     @mcp.tool(name="get_system_info",
               description="Get server info: CPU, memory, disk, network, uptime.")
-    def _get_system_info() -> Dict[str, Any]:
-        return _log(audit_logger, "get_system_info", lambda: get_system_info(settings))
+    async def _get_system_info() -> Dict[str, Any]:
+        return await _log_async(audit_logger, "get_system_info",
+                                lambda: get_system_info(settings))
 
     @mcp.tool(name="health_check",
               description="Run a quick Linux server health check: CPU, memory, disk, network, uptime.")
-    def _health_check() -> Dict[str, Any]:
-        return _log(audit_logger, "health_check", lambda: get_system_info(settings))
+    async def _health_check() -> Dict[str, Any]:
+        return await _log_async(audit_logger, "health_check",
+                                lambda: get_system_info(settings))
 
     @mcp.tool(name="start_background_job",
               description="Start a long-running shell command on the Oracle Cloud Linux server and return immediately with job_id. Use for installs, builds, tests, downloads, dev servers and docker commands.")
@@ -172,20 +181,21 @@ def create_app():
                     lambda: list_jobs(settings, status_filter=status_filter))
 
     @mcp.tool(name="wait_jobs", description="Wait for background jobs to finish, optionally returning output.")
-    def _wait_jobs(job_ids: List[str], timeout_s: Optional[int] = None,
-                   return_output: bool = False) -> Dict[str, Any]:
-        return _log(audit_logger, "wait_jobs",
-                    lambda: wait_jobs(settings, job_ids=job_ids, timeout_s=timeout_s,
-                                      return_output=return_output))
+    async def _wait_jobs(job_ids: List[str], timeout_s: Optional[int] = None,
+                         return_output: bool = False) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "wait_jobs",
+                                lambda: wait_jobs(settings, job_ids=job_ids, timeout_s=timeout_s,
+                                                  return_output=return_output))
 
     @mcp.tool(name="run_commands_parallel",
               description="Run multiple shell commands in parallel on the Oracle Cloud Linux server and collect results.")
-    def _run_commands_parallel(commands: List[str], cwd: Optional[str] = None,
-                               timeout_s: Optional[int] = None,
-                               return_output: bool = True) -> Dict[str, Any]:
-        return _log(audit_logger, "run_commands_parallel",
-                    lambda: run_commands_parallel(settings, commands=commands, cwd=cwd,
-                                                  timeout_s=timeout_s, return_output=return_output))
+    async def _run_commands_parallel(commands: List[str], cwd: Optional[str] = None,
+                                     timeout_s: Optional[int] = None,
+                                     return_output: bool = True) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "run_commands_parallel",
+                                lambda: run_commands_parallel(settings, commands=commands, cwd=cwd,
+                                                              timeout_s=timeout_s,
+                                                              return_output=return_output))
 
     # ── File tools ──────────────────────────────────────────────────────────
     @mcp.tool(name="write_file", description="Write content to a file on the server.")
@@ -216,6 +226,17 @@ def create_app():
         return _log(audit_logger, "edit_file",
                     lambda: edit_file(settings, path=path, old_string=old_string,
                                       new_string=new_string, expected_replacements=expected_replacements))
+
+    @mcp.tool(
+        name="apply_patch",
+        description=(
+            "Apply a Codex-style *** Begin Patch diff. Prefer this for code edits and multi-file "
+            "changes; it can add, update, move, or delete files in one call."
+        ),
+    )
+    async def _apply_patch(patch: str, cwd: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "apply_patch",
+                                lambda: apply_patch(settings, patch=patch, cwd=cwd))
 
     @mcp.tool(name="move_file", description="Move or rename a file or directory.")
     def _move_file(source: str, destination: str) -> Dict[str, Any]:
@@ -262,20 +283,20 @@ def create_app():
 
     @mcp.tool(name="search_files",
               description="Search file contents with grep. include_extensions e.g. ['py','js'].")
-    def _search_files(pattern: str, path: str = "/home/ubuntu",
-                      include_extensions: Optional[List[str]] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "search_files",
-                    lambda: search_files(settings, pattern=pattern, path=path,
-                                         include_extensions=include_extensions))
+    async def _search_files(pattern: str, path: str = "/home/ubuntu",
+                            include_extensions: Optional[List[str]] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "search_files",
+                                lambda: search_files(settings, pattern=pattern, path=path,
+                                                     include_extensions=include_extensions))
 
     @mcp.tool(name="http_request",
               description="Make HTTP GET/POST/PUT/DELETE requests to external URLs.")
-    def _http_request(url: str, method: str = "GET",
-                      headers: Optional[Dict[str, str]] = None,
-                      body: Optional[str] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "http_request",
-                    lambda: http_request(settings, url=url, method=method,
-                                         headers=headers, body=body))
+    async def _http_request(url: str, method: str = "GET",
+                            headers: Optional[Dict[str, str]] = None,
+                            body: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "http_request",
+                                lambda: http_request(settings, url=url, method=method,
+                                                     headers=headers, body=body))
 
     # ── App assembly ────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()
@@ -292,7 +313,7 @@ def create_app():
 
     async def health(_: Request):
         return JSONResponse({
-            "ok": True, "server": os.getenv("MCP_SERVER_NAME", "cloud-mcp-server"),
+            "ok": True, "server": "tarkan-cloud-mcp",
             "base_url": base_url,
             "oauth_authorize": f"{base_url}/oauth/authorize",
             "oauth_token": f"{base_url}/oauth/token",
@@ -393,12 +414,15 @@ def create_app():
         command = b.get("command", "").strip()
         if not command:
             return JSONResponse({"error": "command is required"}, status_code=400)
-        return JSONResponse(run_command(settings, command=command, timeout_s=b.get("timeout_s")))
+        result = await asyncio.to_thread(
+            run_command, settings, command=command, timeout_s=b.get("timeout_s")
+        )
+        return JSONResponse(result)
 
     async def api_process_list(request: Request):
         await api_auth(request)
         b = await _body(request)
-        return JSONResponse(process_list(settings, filter=b.get("filter")))
+        return JSONResponse(await asyncio.to_thread(process_list, settings, filter=b.get("filter")))
 
     async def api_kill_process(request: Request):
         await api_auth(request)
@@ -410,11 +434,11 @@ def create_app():
 
     async def api_system_info(request: Request):
         await api_auth(request)
-        return JSONResponse(get_system_info(settings))
+        return JSONResponse(await asyncio.to_thread(get_system_info, settings))
 
     async def api_health_check(request: Request):
         await api_auth(request)
-        return JSONResponse(get_system_info(settings))
+        return JSONResponse(await asyncio.to_thread(get_system_info, settings))
 
     async def api_jobs_start(request: Request):
         await api_auth(request)
@@ -461,8 +485,11 @@ def create_app():
         job_ids = b.get("job_ids", [])
         if not job_ids:
             return JSONResponse({"error": "job_ids is required"}, status_code=400)
-        return JSONResponse(wait_jobs(settings, job_ids=job_ids, timeout_s=b.get("timeout_s"),
-                                     return_output=b.get("return_output", False)))
+        result = await asyncio.to_thread(
+            wait_jobs, settings, job_ids=job_ids, timeout_s=b.get("timeout_s"),
+            return_output=b.get("return_output", False)
+        )
+        return JSONResponse(result)
 
     async def api_run_parallel(request: Request):
         await api_auth(request)
@@ -470,9 +497,11 @@ def create_app():
         commands = b.get("commands", [])
         if not commands:
             return JSONResponse({"error": "commands is required"}, status_code=400)
-        return JSONResponse(run_commands_parallel(settings, commands=commands, cwd=b.get("cwd"),
-                                                 timeout_s=b.get("timeout_s"),
-                                                 return_output=b.get("return_output", True)))
+        result = await asyncio.to_thread(
+            run_commands_parallel, settings, commands=commands, cwd=b.get("cwd"),
+            timeout_s=b.get("timeout_s"), return_output=b.get("return_output", True)
+        )
+        return JSONResponse(result)
 
     async def api_read_file(request: Request):
         await api_auth(request)
@@ -579,7 +608,11 @@ def create_app():
         pattern = b.get("pattern", "").strip()
         if not pattern:
             return JSONResponse({"error": "pattern is required"}, status_code=400)
-        return JSONResponse(search_files(settings, pattern=pattern, path=b.get("path", "/home/ubuntu"), include_extensions=b.get("include_extensions")))
+        result = await asyncio.to_thread(
+            search_files, settings, pattern=pattern, path=b.get("path", "/home/ubuntu"),
+            include_extensions=b.get("include_extensions")
+        )
+        return JSONResponse(result)
 
     async def api_http_request(request: Request):
         await api_auth(request)
@@ -587,7 +620,11 @@ def create_app():
         url = b.get("url", "").strip()
         if not url:
             return JSONResponse({"error": "url is required"}, status_code=400)
-        return JSONResponse(http_request(settings, url=url, method=b.get("method", "GET"), headers=b.get("headers"), body=b.get("body")))
+        result = await asyncio.to_thread(
+            http_request, settings, url=url, method=b.get("method", "GET"),
+            headers=b.get("headers"), body=b.get("body")
+        )
+        return JSONResponse(result)
 
     # ── WordPress & Zoho CRM proxy endpoints ───────────────────────────────
     import httpx as _httpx
@@ -604,10 +641,9 @@ def create_app():
                     return __import__("json").loads(line[5:].strip())
         return {}
 
-    _WP_URL = os.getenv("WP_MCP_URL", "")
-    _WP_USER = os.getenv("WP_MCP_USERNAME", "")
-    _WP_PASS = os.getenv("WP_MCP_PASSWORD", "")
-    _ZOHO_URL = os.getenv("ZOHO_MCP_URL", "")
+    _WP_URL = "https://tarkan.cloud/wp-json/stifli-flex-mcp/v1/messages"
+    _WP_AUTH = ("bulutarkan", "no77Wf3lSUsYDh7t1pQmBf9b")
+    _ZOHO_URL = "https://ckhturkey-912284844.zohomcp.com/mcp/message?key=da4ef101e2d68b5454b71eb1295adede"
 
     async def api_wp_call(request: Request):
         await api_auth(request)
@@ -618,11 +654,8 @@ def create_app():
         payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
                    "params": {"name": tool, "arguments": b.get("params", {})}}
         try:
-            if not _WP_URL:
-                return JSONResponse({"error": "WP_MCP_URL is not configured"}, status_code=501)
-            auth = (_WP_USER, _WP_PASS) if _WP_USER and _WP_PASS else None
             async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(_WP_URL, auth=auth, json=payload)
+                resp = await client.post(_WP_URL, auth=_WP_AUTH, json=payload)
             return JSONResponse(resp.json())
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=502)
@@ -636,17 +669,15 @@ def create_app():
         payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
                    "params": {"name": tool, "arguments": b.get("params", {})}}
         try:
-            if not _ZOHO_URL:
-                return JSONResponse({"error": "ZOHO_MCP_URL is not configured"}, status_code=501)
             async with _httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(_ZOHO_URL, json=payload)
             return JSONResponse(resp.json())
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=502)
 
-    _EXA_URL = os.getenv("EXA_MCP_URL", "https://mcp.exa.ai/mcp")
-    _TAVILY_URL = os.getenv("TAVILY_MCP_URL", "")
-    _N8N_URL = os.getenv("N8N_MCP_URL", "")
+    _EXA_URL = "https://mcp.exa.ai/mcp"
+    _TAVILY_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=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"
+    _N8N_URL = "https://n8n.tarkan.cloud/mcp/server"
 
     async def api_exa_call(request: Request):
         await api_auth(request)
@@ -674,8 +705,6 @@ def create_app():
         payload = {"jsonrpc": "2.0", "method": "tools/call", "id": 1,
                    "params": {"name": tool, "arguments": args}}
         try:
-            if not _TAVILY_URL:
-                return JSONResponse({"error": "TAVILY_MCP_URL is not configured"}, status_code=501)
             async with _httpx.AsyncClient(timeout=30) as client:
                 result = await _sse_mcp_call(client, _TAVILY_URL, payload)
             return JSONResponse(result)
@@ -683,8 +712,6 @@ def create_app():
             return JSONResponse({"error": str(e)}, status_code=502)
 
     async def _n8n_dispatch(tool_name: str, arguments: dict):
-        if not _N8N_URL:
-            return {"error": "N8N_MCP_URL is not configured"}
         sse_hdrs = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
         async with _httpx.AsyncClient(timeout=60) as client:
             init_resp = await client.post(_N8N_URL, headers=sse_hdrs,

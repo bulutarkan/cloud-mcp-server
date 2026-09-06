@@ -1,15 +1,15 @@
 [Unit]
-Description=Cloud MCP Server
+Description=Tarkan Cloud MCP Server
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/cloud-mcp-server
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/ubuntu/cloud-mcp-server/.venv/bin/uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips="*"
+WorkingDirectory=/home/ubuntu/cloud-mcp
+ExecStart=/home/ubuntu/cloud-mcp/.venv/bin/uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips="*"
 Restart=always
 RestartSec=5
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

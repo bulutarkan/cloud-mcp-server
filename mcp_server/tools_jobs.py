@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
-from .security import BASE_DIR, HOME_DIR, Settings, truncate
+from .security import BASE_DIR, Settings, truncate
 
 JOBS_DIR = BASE_DIR / "jobs"
 DEFAULT_JOB_ENV = {
@@ -61,10 +61,10 @@ def _write_meta(job_id: str, meta: Dict[str, Any]) -> None:
 def _base_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     env = os.environ.copy()
     env.update({
-        "HOME": str(HOME_DIR),
-        "USER": os.getenv("USER", "ubuntu"),
-        "LOGNAME": os.getenv("USER", "ubuntu"),
-        "PATH": f"{os.environ.get('PATH', '')}:{HOME_DIR}/.local/bin:{HOME_DIR}/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": "/home/ubuntu",
+        "USER": "ubuntu",
+        "LOGNAME": "ubuntu",
+        "PATH": f"{os.environ.get('PATH', '')}:/home/ubuntu/.local/bin:/home/ubuntu/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     })
@@ -203,7 +203,7 @@ def start_background_job(
     (job_path / "stdout.log").touch()
     (job_path / "stderr.log").touch()
 
-    workdir = Path(cwd).expanduser().resolve() if cwd else HOME_DIR
+    workdir = Path(cwd).expanduser().resolve() if cwd else Path("/home/ubuntu")
     if not workdir.exists() or not workdir.is_dir():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"cwd does not exist or is not a directory: {workdir}")
 
@@ -363,10 +363,20 @@ def run_commands_parallel(
 ) -> Dict[str, Any]:
     if not commands:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "commands is required.")
+    effective_timeout = min(
+        max(1, timeout_s or settings.default_command_timeout_s),
+        settings.max_command_timeout_s,
+    )
     starts = [
-        start_background_job(settings, command=command, cwd=cwd, timeout_s=timeout_s)
+        start_background_job(settings, command=command, cwd=cwd, timeout_s=effective_timeout)
         for command in commands
     ]
-    waited = wait_jobs(settings, [j["job_id"] for j in starts], timeout_s=timeout_s, return_output=return_output)
+    waited = wait_jobs(
+        settings,
+        [j["job_id"] for j in starts],
+        timeout_s=effective_timeout,
+        return_output=return_output,
+    )
     waited["started"] = starts
+    waited["timeout_s"] = effective_timeout
     return waited

@@ -7,18 +7,18 @@ from .security import Settings, resolve_path, truncate, validate_url
 import httpx
 
 
-HOME_DIR = Path(os.getenv("SERVER_HOME", str(Path.home())))
+HOME_DIR = Path("/home/ubuntu")
 
 
 # ── Terminal ──────────────────────────────────────────────────────────────────
 def run_command(settings: Settings, command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
     timeout = min(max(1, timeout_s or settings.default_command_timeout_s), settings.max_command_timeout_s)
     env = os.environ.copy()
-    env.update({"HOME": str(HOME_DIR), "USER": os.getenv("USER", "ubuntu"), "LANG": "en_US.UTF-8"})
+    env.update({"HOME": "/home/ubuntu", "USER": "ubuntu", "LANG": "en_US.UTF-8"})
     start = time.perf_counter()
     try:
         proc = subprocess.run(["/bin/bash", "-lc", command], capture_output=True,
-                              text=True, timeout=timeout, env=env, cwd=str(HOME_DIR))
+                              text=True, timeout=timeout, env=env, cwd="/home/ubuntu")
         ms = int((time.perf_counter() - start) * 1000)
         stdout, _ = truncate(proc.stdout or "", settings.max_output_chars)
         stderr, _ = truncate(proc.stderr or "", settings.max_output_chars)
@@ -113,6 +113,79 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
                             f"Found {count} occurrences, expected {expected_replacements}.")
     t.write_text(content.replace(old_string, new_string), encoding="utf-8")
     return {"ok": True, "path": str(t), "replacements": count}
+
+
+def apply_patch(settings: Settings, patch: str, cwd: Optional[str] = None) -> Dict[str, Any]:
+    """Apply a Codex-style patch that can update multiple files in one call."""
+    if not patch or not patch.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "patch is required.")
+    if not patch.lstrip().startswith("*** Begin Patch") or not patch.rstrip().endswith("*** End Patch"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Patch must start with '*** Begin Patch' and end with '*** End Patch'.",
+        )
+    if len(patch.encode("utf-8")) > 2_000_000:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Patch exceeds the 2 MB limit.")
+
+    workdir = Path(cwd).expanduser().resolve() if cwd else HOME_DIR
+    if not workdir.exists() or not workdir.is_dir():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"cwd does not exist or is not a directory: {workdir}",
+        )
+
+    override = os.getenv("APPLY_PATCH_BINARY")
+    candidates = [Path(override).expanduser()] if override else list(
+        Path("/home/ubuntu/.npm-global/lib/node_modules/@openai/codex/node_modules").glob(
+            "@openai/codex-linux-*/vendor/*/bin/codex"
+        )
+    )
+    candidates = [candidate for candidate in candidates if candidate.is_file()]
+    if not candidates:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Codex apply_patch engine is not installed on the server.",
+        )
+    binary = max(candidates, key=lambda candidate: candidate.stat().st_mtime)
+
+    env = {
+        "HOME": "/home/ubuntu",
+        "USER": "ubuntu",
+        "LOGNAME": "ubuntu",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+    }
+    start = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            ["apply_patch"],
+            executable=str(binary),
+            input=patch,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(workdir),
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "Patch timed out after 30s.") from exc
+
+    stdout, stdout_truncated = truncate(proc.stdout or "", settings.max_output_chars)
+    stderr, stderr_truncated = truncate(proc.stderr or "", settings.max_output_chars)
+    result = {
+        "ok": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "duration_ms": int((time.perf_counter() - start) * 1000),
+    }
+    if proc.returncode != 0:
+        detail = (stderr or stdout or "Patch could not be applied.").strip()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail)
+    return result
 
 
 def list_directory(settings: Settings, path: str) -> Dict[str, Any]:

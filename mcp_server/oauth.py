@@ -6,23 +6,78 @@ mcp-remote requires: /register (RFC 7591 dynamic client registration).
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
+import threading
 import time
+from pathlib import Path
 from typing import Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
-# In-memory stores (fine for single-instance server)
+# Authorization codes are intentionally short-lived and stay in memory.
 _auth_codes: Dict[str, dict] = {}   # code -> {client_id, redirect_uri, expires}
 _tokens: Dict[str, dict] = {}       # token -> {client_id, expires}
 _dynamic_clients: Dict[str, dict] = {}  # client_id -> {secret, redirect_uris}
 
+OAUTH_STORE_PATH = Path(
+    os.getenv("OAUTH_STORE_PATH", "/home/ubuntu/cloud-mcp/data/oauth_store.json")
+)
+_STORE_LOCK = threading.RLock()
+
 TOKEN_TTL = 3600 * 24 * 30  # 30 days
 CODE_TTL = 300               # 5 minutes
+
+
+def _save_store() -> None:
+    """Persist restart-sensitive OAuth state with owner-only permissions."""
+    with _STORE_LOCK:
+        OAUTH_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = OAUTH_STORE_PATH.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(
+                {"tokens": _tokens, "dynamic_clients": _dynamic_clients},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(tmp, 0o600)
+        tmp.replace(OAUTH_STORE_PATH)
+        os.chmod(OAUTH_STORE_PATH, 0o600)
+
+
+def _load_store() -> None:
+    if not OAUTH_STORE_PATH.exists():
+        return
+    try:
+        data = json.loads(OAUTH_STORE_PATH.read_text(encoding="utf-8"))
+        now = time.time()
+        tokens = data.get("tokens", {})
+        clients = data.get("dynamic_clients", {})
+        if isinstance(tokens, dict):
+            _tokens.update({
+                token: entry
+                for token, entry in tokens.items()
+                if isinstance(entry, dict) and float(entry.get("expires", 0)) >= now
+            })
+        if isinstance(clients, dict):
+            _dynamic_clients.update({
+                client_id: entry
+                for client_id, entry in clients.items()
+                if isinstance(entry, dict)
+            })
+        os.chmod(OAUTH_STORE_PATH, 0o600)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        # A corrupt store must not prevent the MCP server from starting.
+        return
+
+
+_load_store()
 
 
 def _load_clients() -> Dict[str, dict]:
@@ -33,6 +88,7 @@ def _load_clients() -> Dict[str, dict]:
                 u.strip()
                 for u in os.getenv(
                     "OAUTH_REDIRECT_URIS",
+                    "https://chatgpt.com/aip/g-a73fae4c14167dad8b38b35bcf724b31/oauth/callback,"
                     "https://chatgpt.com/aip/mcp/oauth/callback",
                 ).split(",")
                 if u.strip()
@@ -42,10 +98,30 @@ def _load_clients() -> Dict[str, dict]:
     return {**base, **_dynamic_clients}
 
 
+def _is_trusted_chatgpt_redirect(redirect_uri: str) -> bool:
+    """Allow recovery only for ChatGPT's HTTPS connector callback namespace."""
+    try:
+        parsed = urlparse(redirect_uri)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "chatgpt.com"
+        and parsed.netloc.lower() in {"chatgpt.com", "chatgpt.com:443"}
+        and parsed.path.startswith("/connector/oauth/")
+        and not parsed.fragment
+    )
+
+
 def _verify_client(client_id: str, redirect_uri: str) -> None:
     clients = _load_clients()
     client = clients.get(client_id)
     if not client:
+        # A pre-persistence ChatGPT registration can survive on the client while
+        # the old server-side in-memory record is gone. Password approval plus
+        # token-exchange validation below safely reconstructs that record.
+        if _is_trusted_chatgpt_redirect(redirect_uri):
+            return
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown client_id.")
     # localhost her zaman izinli (mcp-remote random port kullanir)
     if redirect_uri and redirect_uri.startswith("http://localhost"):
@@ -63,7 +139,7 @@ def authorize_get(request: Request) -> HTMLResponse:
     resource = request.query_params.get("resource", "")
     code_challenge = request.query_params.get("code_challenge", "")
     code_challenge_method = request.query_params.get("code_challenge_method", "")
-    base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    base_url = os.getenv("BASE_URL", "https://mcp.tarkan.cloud")
 
     try:
         _verify_client(client_id, redirect_uri)
@@ -75,7 +151,7 @@ def authorize_get(request: Request) -> HTMLResponse:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Cloud MCP – Authorize</title>
+  <title>Tarkan's MCP – Authorize</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -102,8 +178,8 @@ def authorize_get(request: Request) -> HTMLResponse:
 <body>
   <div class="card">
     <div class="icon">🔐</div>
-    <h1>Cloud MCP</h1>
-    <p>The following application is requesting access:</p>
+    <h1>Tarkan's Cloud MCP</h1>
+    <p>Aşağıdaki uygulama erişim istiyor:</p>
     <div class="client">{client_id}</div>
     <form method="POST" action="{base_url}/oauth/authorize">
       <input type="hidden" name="client_id" value="{client_id}">
@@ -113,9 +189,9 @@ def authorize_get(request: Request) -> HTMLResponse:
       <input type="hidden" name="resource" value="{resource}">
       <input type="hidden" name="code_challenge" value="{code_challenge}">
       <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
-      <input type="password" name="password" placeholder="Master password" autofocus>
-      <div class="err" id="err">Wrong password.</div>
-      <button type="submit">Authorize and Connect</button>
+      <input type="password" name="password" placeholder="Master şifre" autofocus>
+      <div class="err" id="err">Yanlış şifre.</div>
+      <button type="submit">Onayla ve Bağlan</button>
     </form>
   </div>
 </body>
@@ -141,7 +217,7 @@ async def authorize_post_handler(request: Request) -> RedirectResponse:
     code_challenge_method = str(form.get("code_challenge_method", ""))
     master = os.getenv("OAUTH_MASTER_PASSWORD", os.getenv("OAUTH_CLIENT_SECRET", ""))
     if password != master:
-        base_url = os.getenv("BASE_URL", "http://localhost:8000")
+        base_url = os.getenv("BASE_URL", "https://mcp.tarkan.cloud")
         params = urlencode({
             "client_id": client_id,
             "redirect_uri": redirect_uri,
@@ -189,6 +265,22 @@ async def token_handler(request: Request) -> JSONResponse:
 
     clients = _load_clients()
     client = clients.get(client_id)
+    pending_entry = _auth_codes.get(code) if grant_type == "authorization_code" else None
+    if (
+        not client
+        and client_secret
+        and pending_entry
+        and pending_entry.get("expires", 0) >= time.time()
+        and pending_entry.get("client_id") == client_id
+        and pending_entry.get("redirect_uri") == redirect_uri
+        and _is_trusted_chatgpt_redirect(redirect_uri)
+    ):
+        _dynamic_clients[client_id] = {
+            "secret": client_secret,
+            "redirect_uris": [redirect_uri],
+        }
+        _save_store()
+        client = _dynamic_clients[client_id]
     if not client or client["secret"] != client_secret:
         return JSONResponse({"error": "invalid_client"}, status_code=401)
 
@@ -224,6 +316,7 @@ async def token_handler(request: Request) -> JSONResponse:
             "expires": time.time() + TOKEN_TTL,
             "resource": (resource or code_resource),
         }
+        _save_store()
 
         resp = {
             "access_token": token,
@@ -256,6 +349,7 @@ async def register_client_handler(request: Request) -> JSONResponse:
         "secret": client_secret,
         "redirect_uris": redirect_uris,
     }
+    _save_store()
 
     return JSONResponse({
         "client_id": client_id,
@@ -279,5 +373,8 @@ def verify_token(authorization: Optional[str]) -> str:
     token = parts[1]
     entry = _tokens.get(token)
     if not entry or entry["expires"] < time.time():
+        if entry:
+            _tokens.pop(token, None)
+            _save_store()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token.")
     return entry["client_id"]
