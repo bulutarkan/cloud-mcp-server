@@ -232,15 +232,17 @@ You are connected to my Linux server through Cloud MCP. Before running destructi
 
 ## Agent delegation
 
-If OpenCode and/or Codex CLI is installed on the server, the MCP endpoint exposes five compact delegation tools:
+If OpenCode and/or Codex CLI is installed on the server, the MCP endpoint exposes seven compact delegation tools:
 
 - `agent_catalog` — discover providers, models, and reasoning options
-- `spawn_agent` — start a non-blocking background agent and return `agent_id` immediately
-- `list_agents` — list compact agent states and result previews
-- `get_agent` — fetch status and the concise final handoff; logs are opt-in for debugging
-- `agent_action` — cancel, resume with a message, retry, or despawn an agent
+- `spawn_agent` — start one non-blocking background agent; supports idle timeout and same-model automatic retries
+- `spawn_agents` — start up to 10 agents as one `team_id` in a single call with shared provider/model/reasoning/access settings
+- `wait_agents` — bounded wait for `all`, `any`, or `majority` completion and collect concise results without repeated polling
+- `list_agents` — list compact agent states/result previews and optionally filter by `team_id`
+- `get_agent` — fetch status, progress/timing telemetry and the concise final handoff; logs are opt-in for debugging
+- `agent_action` — cancel, retry, despawn or resume an individual agent; team cancel/despawn/retry cascades to children
 
-Agent state is stored on disk, so completed results remain available across MCP restarts. The default final handoff is intentionally concise to keep the parent AI context small.
+Agent and team state is stored on disk, so completed results remain available across MCP restarts. Team children inherit one shared model configuration to prevent accidental mixed-model teams. Progress metadata includes provider/event timing, phase, idle time, steps and tool calls. The default final handoff is intentionally concise to keep the parent AI context small.
 
 ## Important endpoints
 
