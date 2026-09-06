@@ -16,6 +16,7 @@ It is designed for Ubuntu/Linux servers such as Oracle Cloud, DigitalOcean, Hetz
 - List processes and kill processes
 - Check CPU, RAM, disk, network, and uptime
 - Run long commands as background jobs with logs
+- Delegate long tasks to OpenCode or Codex agents in the background
 - Run parallel commands
 - Make outbound HTTP requests
 - Optional proxy endpoints for WordPress MCP, Zoho MCP, Exa, Tavily, and n8n
@@ -228,6 +229,18 @@ A good GPT instruction starter:
 ```text
 You are connected to my Linux server through Cloud MCP. Before running destructive commands, explain the risk and ask for confirmation. Prefer reading files and checking status before changing anything. Use background jobs for long-running installs, builds, and dev servers.
 ```
+
+## Agent delegation
+
+If OpenCode and/or Codex CLI is installed on the server, the MCP endpoint exposes five compact delegation tools:
+
+- `agent_catalog` — discover providers, models, and reasoning options
+- `spawn_agent` — start a non-blocking background agent and return `agent_id` immediately
+- `list_agents` — list compact agent states and result previews
+- `get_agent` — fetch status and the concise final handoff; logs are opt-in for debugging
+- `agent_action` — cancel, resume with a message, retry, or despawn an agent
+
+Agent state is stored on disk, so completed results remain available across MCP restarts. The default final handoff is intentionally concise to keep the parent AI context small.
 
 ## Important endpoints
 

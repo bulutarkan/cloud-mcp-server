@@ -27,6 +27,9 @@ from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
     stop_job, list_jobs, wait_jobs, run_commands_parallel,
 )
+from .tools_agents import (
+    agent_catalog, spawn_agent, list_agents, get_agent, agent_action,
+)
 
 
 def _log(audit_logger, tool: str, fn):
@@ -196,6 +199,64 @@ def create_app():
                                 lambda: run_commands_parallel(settings, commands=commands, cwd=cwd,
                                                               timeout_s=timeout_s,
                                                               return_output=return_output))
+
+    # ── Agent delegation tools ──────────────────────────────────────────────
+    @mcp.tool(
+        name="agent_catalog",
+        description="List available agent providers/models and supported reasoning options.",
+    )
+    async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
+                             free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "agent_catalog",
+                                lambda: agent_catalog(settings, provider=provider,
+                                                      model_filter=model_filter, free_only=free_only,
+                                                      limit=limit))
+
+    @mcp.tool(
+        name="spawn_agent",
+        description=(
+            "Delegate a task to an OpenCode or Codex agent running in the background. "
+            "Returns immediately with agent_id; final handoff is concise by default."
+        ),
+    )
+    def _spawn_agent(provider: str, prompt: str, model: Optional[str] = None,
+                     reasoning: Optional[str] = None, cwd: Optional[str] = None,
+                     timeout_s: Optional[int] = None, title: Optional[str] = None,
+                     result_style: str = "concise",
+                     access_mode: str = "workspace_write") -> Dict[str, Any]:
+        return _log(audit_logger, "spawn_agent",
+                    lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
+                                        reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
+                                        title=title, result_style=result_style,
+                                        access_mode=access_mode))
+
+    @mcp.tool(
+        name="list_agents",
+        description="List delegated agents with compact status/result previews.",
+    )
+    def _list_agents(status_filter: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+        return _log(audit_logger, "list_agents",
+                    lambda: list_agents(settings, status_filter=status_filter, limit=limit))
+
+    @mcp.tool(
+        name="get_agent",
+        description="Get one delegated agent status and concise final result. Set include_logs=true only for debugging.",
+    )
+    def _get_agent(agent_id: str, include_logs: bool = False,
+                   tail_lines: int = 40) -> Dict[str, Any]:
+        return _log(audit_logger, "get_agent",
+                    lambda: get_agent(settings, agent_id=agent_id, include_logs=include_logs,
+                                      tail_lines=tail_lines))
+
+    @mcp.tool(
+        name="agent_action",
+        description="Control an agent. action: cancel, message (resume session), retry, or despawn.",
+    )
+    def _agent_action(agent_id: str, action: str, message: Optional[str] = None,
+                      signal: str = "TERM") -> Dict[str, Any]:
+        return _log(audit_logger, "agent_action",
+                    lambda: agent_action(settings, agent_id=agent_id, action=action,
+                                         message=message, signal=signal))
 
     # ── File tools ──────────────────────────────────────────────────────────
     @mcp.tool(name="write_file", description="Write content to a file on the server.")

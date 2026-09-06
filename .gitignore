@@ -14,3 +14,5 @@ mcp_server/audit.log
 .coverage
 dist/
 build/
+
+mcp_server/agents/
