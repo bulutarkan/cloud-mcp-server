@@ -18,6 +18,7 @@ It is designed for Ubuntu/Linux servers such as Oracle Cloud, DigitalOcean, Hetz
 - Run long commands as background jobs with logs
 - Delegate long tasks to OpenCode or Codex agents in the background
 - Run parallel commands
+- Persistent human-readable memory with hybrid SQLite FTS5 + multilingual semantic search
 - Make outbound HTTP requests
 - Optional proxy endpoints for WordPress MCP, Zoho MCP, Exa, Tavily, and n8n
 - systemd service file for 24/7 operation and automatic restart
@@ -243,6 +244,32 @@ If OpenCode and/or Codex CLI is installed on the server, the MCP endpoint expose
 - `agent_action` — cancel, retry, despawn or resume an individual agent; team cancel/despawn/retry cascades to children
 
 Agent and team state is stored on disk, so completed results remain available across MCP restarts. Team children inherit one shared model configuration to prevent accidental mixed-model teams. Progress metadata includes provider/event timing, phase, idle time, steps and tool calls. The default final handoff is intentionally concise to keep the parent AI context small.
+
+
+## Persistent memory
+
+The MCP endpoint exposes five persistent memory tools:
+
+- `memory_add` — append a timestamped memory
+- `memory_search` — hybrid semantic/FTS search or date-range listing
+- `memory_get` — fetch one exact stable `memory_id`
+- `memory_update` — update one exact memory, or list candidates by date before choosing
+- `memory_delete` — preview deletion and require `confirm=true` for the destructive step
+
+Human-readable Markdown is the source of truth and is stored under `~/.cloud-mcp/memory/YYYY/MM/YYYY-MM-DD.md` using Europe/Istanbul timestamps. A rebuildable SQLite FTS5/vector index lives at `~/.cloud-mcp/memory/memory-index.sqlite3`. Manual edits to the Markdown journals are detected and re-indexed automatically.
+
+Query-based `memory_search` uses FastEmbed with `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) for multilingual semantic retrieval, with a dependency-free feature-hash fallback. The embedding model is downloaded lazily to `~/.cloud-mcp/cache/fastembed`. Inference runs in a separate worker process: normal add/get/update/delete and queryless listing do not start it; semantic search starts it on demand, reuses it briefly, and the worker exits after 60 seconds of embedding inactivity by default so model RAM is reclaimed.
+
+Optional environment overrides:
+
+```env
+CLOUD_MCP_MEMORY_DIR=/home/ubuntu/.cloud-mcp/memory
+CLOUD_MCP_MEMORY_MODEL_CACHE=/home/ubuntu/.cloud-mcp/cache/fastembed
+CLOUD_MCP_MEMORY_MODEL_IDLE_SECONDS=60
+CLOUD_MCP_MEMORY_EMBEDDING=auto
+```
+
+`CLOUD_MCP_MEMORY_EMBEDDING` accepts `auto` (default), `multilingual`/`fastembed`, or `feature_hash`.
 
 ## Important endpoints
 
