@@ -34,6 +34,10 @@ from .tools_agents import (
 from .tools_memory import (
     memory_add, memory_search, memory_get, memory_update, memory_delete,
 )
+from .tools_skills import (
+    skill_list, skill_search, skill_get, skill_register, skill_update_index,
+)
+from .tools_update import cloud_mcp_self_deploy, cloud_mcp_deploy_status
 
 
 def _log(audit_logger, tool: str, fn):
@@ -370,6 +374,83 @@ def create_app():
             audit_logger, "memory_delete",
             lambda: memory_delete(memory_id=memory_id, confirm=confirm, date=date,
                                   date_from=date_from, date_to=date_to, limit=limit),
+        )
+
+    # ── Skill tools ─────────────────────────────────────────────────────────
+    @mcp.tool(
+        name="skill_list",
+        description=(
+            "List indexed Agent Skills without loading full SKILL.md bodies. Returns name, description, and location "
+            "for progressive disclosure."
+        ),
+    )
+    async def _skill_list(limit: int = 100) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "skill_list", lambda: skill_list(limit=limit))
+
+    @mcp.tool(
+        name="skill_search",
+        description=(
+            "Search Agent Skills with hybrid SQLite FTS5 + the same shared multilingual embedding worker used by memory_search. "
+            "Returns skill metadata and SKILL.md paths; call skill_get to activate one."
+        ),
+    )
+    async def _skill_search(query: str, limit: int = 10) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "skill_search", lambda: skill_search(query=query, limit=limit))
+
+    @mcp.tool(
+        name="skill_get",
+        description=(
+            "Load one Agent Skill by name or SKILL.md path. Returns full SKILL.md content, skill directory, and a list of "
+            "bundled scripts/references/assets without eagerly loading resource contents."
+        ),
+    )
+    async def _skill_get(name: Optional[str] = None, path: Optional[str] = None,
+                         resource_limit: int = 200) -> Dict[str, Any]:
+        return await _log_async(
+            audit_logger, "skill_get",
+            lambda: skill_get(name=name, path=path, resource_limit=resource_limit),
+        )
+
+    @mcp.tool(
+        name="skill_register",
+        description=(
+            "Validate and register an existing Agent Skill directory or SKILL.md path. Managed skills under "
+            "~/.cloud-mcp/skills are discovered automatically; external skill paths can be registered explicitly."
+        ),
+    )
+    async def _skill_register(path: str) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "skill_register", lambda: skill_register(path=path))
+
+    @mcp.tool(
+        name="skill_update_index",
+        description="Rescan managed and registered SKILL.md files and rebuild changed skill index entries without starting the embedding worker.",
+    )
+    async def _skill_update_index() -> Dict[str, Any]:
+        return await _log_async(audit_logger, "skill_update_index", skill_update_index)
+
+    # ── Safe self-deploy tools ───────────────────────────────────────────────
+    @mcp.tool(
+        name="cloud_mcp_self_deploy",
+        description=(
+            "Check or start a safe self-deploy from /home/ubuntu/Projects/cloud-mcp-server to the running Cloud MCP. "
+            "check_only=true compares Git/runtime state. check_only=false requires a clean repo, runs preflight tests, "
+            "then starts a detached deploy helper with restart, health check, and automatic code rollback on failure."
+        ),
+    )
+    async def _cloud_mcp_self_deploy(check_only: bool = True, branch: str = "main") -> Dict[str, Any]:
+        return await _log_async(
+            audit_logger, "cloud_mcp_self_deploy",
+            lambda: cloud_mcp_self_deploy(check_only=check_only, branch=branch),
+        )
+
+    @mcp.tool(
+        name="cloud_mcp_deploy_status",
+        description="Read the persisted status/result of a Cloud MCP self-deployment by deployment_id.",
+    )
+    async def _cloud_mcp_deploy_status(deployment_id: str) -> Dict[str, Any]:
+        return await _log_async(
+            audit_logger, "cloud_mcp_deploy_status",
+            lambda: cloud_mcp_deploy_status(deployment_id),
         )
 
     # ── File tools ──────────────────────────────────────────────────────────

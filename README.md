@@ -269,7 +269,43 @@ CLOUD_MCP_MEMORY_MODEL_IDLE_SECONDS=60
 CLOUD_MCP_MEMORY_EMBEDDING=auto
 ```
 
-`CLOUD_MCP_MEMORY_EMBEDDING` accepts `auto` (default), `multilingual`/`fastembed`, or `feature_hash`.
+The memory and Agent Skills indexes share **one** embedding manager, model cache, and on-demand FastEmbed worker. `memory_search` and `skill_search` therefore never keep separate model processes in RAM. The shared worker exits after 60 seconds of embedding inactivity by default. New shared environment names are `CLOUD_MCP_EMBEDDING`, `CLOUD_MCP_EMBEDDING_MODEL_CACHE`, and `CLOUD_MCP_EMBEDDING_IDLE_SECONDS`; the older `CLOUD_MCP_MEMORY_*` embedding variables remain supported for backward compatibility.
+
+## Agent Skills
+
+Cloud MCP supports the open Agent Skills directory format. Managed skills live under `~/.cloud-mcp/skills/<skill-name>/SKILL.md`. A skill may also bundle `scripts/`, `references/`, `assets/`, or other files. Only name/description/path are returned during discovery; `skill_get` loads the full `SKILL.md`, and bundled resources are listed without eagerly loading their contents.
+
+The MCP endpoint exposes five skill tools:
+
+- `skill_list` — list skill catalog metadata and SKILL.md locations
+- `skill_search` — hybrid SQLite FTS5 + shared multilingual semantic search
+- `skill_get` — activate a skill by loading SKILL.md plus resource paths
+- `skill_register` — register an external skill directory/SKILL.md path
+- `skill_update_index` — rescan changed skill files without starting the embedding model
+
+The skill index is rebuildable and stored at `~/.cloud-mcp/skills/skills-index.sqlite3`. Managed SKILL.md files are discovered automatically; registered external files remain source-of-truth at their original path.
+
+Typical skill layout:
+
+```text
+~/.cloud-mcp/skills/wordpress-performance/
+├── SKILL.md
+├── scripts/
+├── references/
+└── assets/
+```
+
+`SKILL.md` must start with YAML frontmatter containing at least a lowercase/hyphenated `name` and a non-empty `description`. Relative paths in SKILL.md are resolved from the skill directory.
+
+## Safe self-deploy
+
+Two MCP tools support Cloud MCP self-maintenance without depending on the Mac:
+
+- `cloud_mcp_self_deploy(check_only=true)` — fetches Git metadata and compares `/home/ubuntu/Projects/cloud-mcp-server` with the runtime.
+- `cloud_mcp_self_deploy(check_only=false)` — only from a clean repository; runs compile/tests/pip checks, then starts a detached deploy helper. The helper backs up managed runtime code, installs declared dependencies, restarts `cloud-mcp.service`, checks `/health`, and restores the previous code automatically if health fails.
+- `cloud_mcp_deploy_status(deployment_id)` — reads the persisted deployment result after the MCP process has restarted.
+
+Deployment records live under `~/.cloud-mcp/deployments/` and code backups under `~/.cloud-mcp/deploy-backups/`. The helper runs outside the MCP request process so a normal service restart does not kill the deployment controller.
 
 ## Important endpoints
 
