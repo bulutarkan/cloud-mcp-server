@@ -141,12 +141,12 @@ function __mcpState(){
   return s;
 }
 function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}
-function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=getComputedStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=el.getBoundingClientRect();if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
-function __mcpActionable(el){var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();if(['a','button','input','textarea','select','summary','details'].includes(tag))return true;if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider'].includes(role))return true;if(el.isContentEditable||el.hasAttribute('onclick'))return true;try{if(getComputedStyle(el).cursor==='pointer')return true;}catch(e){}var ti=el.getAttribute('tabindex');return ti!==null&&Number(ti)>=0;}
+function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=getComputedStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
+function __mcpActionable(el){var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();if(['a','button','input','textarea','select','summary','details'].includes(tag))return true;if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider'].includes(role))return true;if(el.getAttribute('contenteditable')==='true'||el.hasAttribute('onclick'))return true;var ti=el.getAttribute('tabindex');if(ti!==null&&Number(ti)>=0)return true;try{var cur=getComputedStyle(el).cursor;if(cur==='pointer'&&!['svg','use','path'].includes(tag)){var p=el.parentElement,pc=p?getComputedStyle(p).cursor:'';if(pc!=='pointer')return true;}}catch(e){}return false;}
 function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}return (aria||ph||title||txt).slice(0,240);}
-function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return 'link';if(tag==='button')return 'button';if(tag==='select')return 'combobox';if(tag==='textarea'||el.isContentEditable)return 'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return 'checkbox';if(t==='radio')return 'radio';if(['button','submit','reset'].includes(t))return 'button';return 'textbox';}return '';}
+function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return 'link';if(tag==='button')return 'button';if(tag==='select')return 'combobox';if(tag==='textarea'||el.getAttribute('contenteditable')==='true')return 'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return 'checkbox';if(t==='radio')return 'radio';if(['button','submit','reset'].includes(t))return 'button';return 'textbox';}return '';}
 function __mcpRect(el){var r=el.getBoundingClientRect();return {viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)}};}
-function __mcpDescribe(el,s){var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el);var out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,document_rect:rect.document,actionable:__mcpActionable(el)};var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,120);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,120);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,240);if(el.disabled===true)out.enabled=false;else out.enabled=true;if(document.activeElement===el)out.focused=true;if(['input','textarea','select'].includes(tag))out.value=String(el.value||'').slice(0,200);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean')out.checked=!!el.checked;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,30).map(function(o){return {text:String(o.text||'').slice(0,100),value:String(o.value||'').slice(0,100),selected:!!o.selected};});return out;}
+function __mcpDescribe(el,s){var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el);var out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,document_rect:rect.document,actionable:__mcpActionable(el)};var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,120);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,120);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,240);if(el.disabled===true)out.enabled=false;else out.enabled=true;if(document.activeElement===el)out.focused=true;if(['input','textarea','select'].includes(tag))out.value=String(el.value||'').slice(0,200);if(el.getAttribute('contenteditable')==='true'){out.contenteditable=true;out.value=String(el.innerText||el.textContent||'').slice(0,200);}if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean')out.checked=!!el.checked;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,30).map(function(o){return {text:String(o.text||'').slice(0,100),value:String(o.value||'').slice(0,100),selected:!!o.selected};});return out;}
 '''
 
 
@@ -249,6 +249,8 @@ def _score_element(element: Dict[str, Any], query: str, role: Optional[str], tex
             vwords = set(v.split())
             if qwords:
                 best = max(best, 40.0 * len(qwords & vwords) / len(qwords))
+    if q and best <= 0:
+        return -1
     if element.get("actionable"):
         best += 5
     return best
@@ -257,7 +259,8 @@ def _score_element(element: Dict[str, Any], query: str, role: Optional[str], tex
 def browser_find(query: str, role: Optional[str] = None, text: Optional[str] = None,
                  tab_id: Optional[str] = None, max_results: int = 5,
                  actionable_only: bool = False) -> Dict[str, Any]:
-    observed = browser_observe(scope="visible", max_elements=200, visual="none", tab_id=tab_id)
+    observe_scope = "interactive" if actionable_only or role else "visible"
+    observed = browser_observe(scope=observe_scope, max_elements=200, visual="none", tab_id=tab_id)
     elements = observed.get("elements", [])
     ranked = []
     for element in elements:
