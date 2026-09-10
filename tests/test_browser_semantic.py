@@ -45,6 +45,35 @@ class BrowserSemanticTests(unittest.TestCase):
         self.assertEqual(result["elements"][0]["role"], "textbox")
         self.assertEqual(result["elements"][0]["element_id"], "e1")
 
+    def test_browser_do_open_wait_extract_close(self):
+        with patch.object(bs, "browser_open_url", return_value={"ok": True, "tab_id": "tab-new", "url": "https://example.com", "new_tab": True}), \
+             patch.object(bs, "_wait_browser", return_value={"ok": True, "type": "wait", "for": "network_idle", "matched": True}), \
+             patch.object(bs, "_extract_browser", return_value={"ok": True, "type": "extract", "url": "https://example.com", "title": "Example", "data": {"price": ["£99"]}}), \
+             patch.object(bs, "browser_close_tab", return_value={"ok": True, "closed": True}):
+            result = bs.browser_do(url="https://example.com", extract=["price"], close_after=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["price"], ["£99"])
+        self.assertTrue(result["closed"])
+        self.assertEqual(result["tab_id"], "tab-new")
+        self.assertEqual(result["url"], "https://example.com")
+        self.assertEqual(result["title"], "Example")
+
+    def test_browser_do_runs_actions_sequentially(self):
+        calls = []
+        def fake_act(actions, **kwargs):
+            calls.append(actions[0])
+            return {"ok": True, "actions": [{"ok": True, "type": actions[0]["type"], "element_id": actions[0].get("element_id")}], "url": "https://example.com", "title": "Example"}
+        with patch.object(bs, "_target", return_value={"id": "tab-1"}), \
+             patch.object(bs, "browser_act", side_effect=fake_act):
+            result = bs.browser_do(actions=[{"type": "click", "element_id": "e1"}, {"type": "type", "element_id": "e2", "text": "hello"}])
+        self.assertTrue(result["ok"])
+        self.assertEqual([c["type"] for c in calls], ["click", "type"])
+
+    def test_browser_do_rejects_close_existing_tab(self):
+        with patch.object(bs, "_target", return_value={"id": "tab-1"}):
+            with self.assertRaises(bs.HTTPException):
+                bs.browser_do(tab_id="tab-1", actions=[{"type": "wait", "for": "dom_stable", "required": False, "timeout_s": 0.1}], close_after=True)
+
     def test_find_prefers_exact_match(self):
         observed = {
             "tab_id": "tab1",

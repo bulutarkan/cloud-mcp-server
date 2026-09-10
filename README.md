@@ -104,6 +104,23 @@ Browser tools:
 - `browser_find` — exact-first semantic element lookup.
 - `browser_act` — batch up to 20 element-targeted actions.
 - `browser_open_url` — navigate a selected tab or create a new visible tab.
+- `browser_do` — preferred one-call browser transaction: optionally open a URL/new tab, wait for readiness, perform semantic actions, extract compact data, return optional state, and close only a tab that it created.
+
+`browser_do` actions may include the normal semantic `browser_act` actions plus `wait`. Wait conditions include `network_idle`, `dom_stable`, `selector`, `text`, and `url_change`. The `extract` argument accepts semantic fields such as `price`, `cancellation`, `parking`, `rating`, `breakfast`, `payment`, `location`, `distance`, `availability`, `checkin`, and `checkout`, or explicit selector field objects. This keeps common research/form workflows inside one MCP round trip while the browser remains fully headed and visible in VNC.
+
+Example:
+
+```text
+browser_do(
+  url="https://example.com",
+  actions=[
+    {"type":"click", "query":"Search", "role":"button"},
+    {"type":"wait", "for":"dom_stable", "required":false}
+  ],
+  extract=["price", "cancellation", "payment"],
+  close_after=true
+)
+```
 
 The DevTools listener is bound to `127.0.0.1` only. Override its local port if needed:
 
@@ -111,7 +128,7 @@ The DevTools listener is bound to `127.0.0.1` only. Override its local port if n
 CLOUD_MCP_CHROMIUM_DEBUG_PORT=9222
 ```
 
-Keep this port firewalled/private; Cloud MCP never needs to expose it through Nginx or the public Internet. For browser tasks, prefer `browser_observe`/`browser_act`; use `desktop_observe`/`desktop_act` as the visual/native fallback for browser chrome, OS dialogs, captchas, extensions, or non-browser applications.
+Keep this port firewalled/private; Cloud MCP never needs to expose it through Nginx or the public Internet. For normal browser tasks, prefer `browser_do`; use `browser_observe`/`browser_find`/`browser_act` for fine-grained control and debugging, and `desktop_observe`/`desktop_act` as the visual/native fallback for browser chrome, OS dialogs, captchas, extensions, or non-browser applications.
 
 The desktop tools are:
 

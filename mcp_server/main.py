@@ -44,7 +44,7 @@ from .tools_desktop import (
     desktop_launch, chromium_launch, chromium_open_url, chromium_close,
 )
 from .tools_browser_semantic import (
-    browser_list_tabs, browser_activate_tab, browser_close_tab, browser_observe, browser_find, browser_act, browser_open_url,
+    browser_list_tabs, browser_activate_tab, browser_close_tab, browser_observe, browser_find, browser_act, browser_open_url, browser_do,
 )
 
 
@@ -281,6 +281,21 @@ def create_app():
                                 activate: bool = True) -> Dict[str, Any]:
         return await _log_async(audit_logger, "browser_open_url",
                                 lambda: browser_open_url(url=url, tab_id=tab_id, new_tab=new_tab, activate=activate))
+
+    @mcp.tool(name="browser_do",
+              description="Preferred one-call headed Chromium transaction: optionally open a URL/tab, wait for readiness, perform semantic actions, extract compact page data, return optional state, and optionally close only the tab it created.")
+    async def _browser_do(url: Optional[str] = None, actions: Optional[List[Dict[str, Any]]] = None,
+                          tab_id: Optional[str] = None, new_tab: bool = True, activate: bool = True,
+                          wait_after_open: bool = True, return_state: str = "none",
+                          close_after: bool = False, debug: bool = False,
+                          extract: Optional[List[Any]] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_do",
+                                lambda: browser_do(url=url, actions=actions, tab_id=tab_id,
+                                                   new_tab=new_tab, activate=activate,
+                                                   wait_after_open=wait_after_open,
+                                                   return_state=return_state,
+                                                   close_after=close_after, debug=debug,
+                                                   extract=extract))
 
     # ── Terminal tools ──────────────────────────────────────────────────────
     @mcp.tool(name="run_command",

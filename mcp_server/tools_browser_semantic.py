@@ -375,3 +375,280 @@ def browser_open_url(url: str, tab_id: Optional[str] = None, new_tab: bool = Fal
     if activate:
         browser_activate_tab(str(target.get("id")))
     return {"ok": True, "tab_id": target.get("id"), "url": url, "frame_id": result.get("frameId"), "new_tab": False, "via": "cdp_headed_chromium"}
+
+
+_SEMANTIC_EXTRACT_ALIASES = {
+    "price": ["price", "fiyat", "total", "toplam", "tutar", "₺", "tl", "try", "€", "eur", "$", "usd", "£", "gbp"],
+    "cancellation": ["cancellation", "cancel", "refundable", "refund", "free cancellation", "iptal", "ücretsiz iptal", "ucretsiz iptal", "iade"],
+    "parking": ["parking", "car park", "parking lot", "otopark", "park yeri", "valet", "vale"],
+    "rating": ["rating", "score", "review score", "puan", "değerlendirme", "degerlendirme", "yorum puanı", "yorum puani"],
+    "breakfast": ["breakfast", "kahvaltı", "kahvalti"],
+    "payment": ["payment", "pay at property", "pay later", "prepayment", "ödeme", "odeme", "otelde ödeme", "tesiste ödeme"],
+    "location": ["location", "address", "konum", "adres"],
+    "distance": ["distance", "away", "walking", "walk", "mesafe", "uzaklık", "uzaklik", "yürüme", "yurume"],
+    "availability": ["availability", "available", "rooms left", "müsait", "musait", "son oda", "son odalar"],
+    "checkin": ["check-in", "check in", "giriş", "giris"],
+    "checkout": ["check-out", "check out", "çıkış", "cikis"],
+}
+
+
+def _wait_browser(tab_id: str, condition: str = "network_idle", timeout_s: float = 15.0,
+                  selector: Optional[str] = None, text: Optional[str] = None,
+                  initial_url: Optional[str] = None, stable_ms: int = 500,
+                  required: bool = True) -> Dict[str, Any]:
+    condition = str(condition or "network_idle").strip().lower()
+    if condition not in {"network_idle", "dom_stable", "selector", "text", "url_change"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "wait condition must be network_idle, dom_stable, selector, text, or url_change")
+    timeout_s = max(0.1, min(float(timeout_s), 60.0))
+    stable_ms = max(100, min(int(stable_ms), 5000))
+    target = _target(tab_id)
+    started = time.perf_counter()
+    last_signature = None
+    stable_since = time.perf_counter()
+    polls = 0
+    matched = False
+    final_state: Dict[str, Any] = {}
+    while time.perf_counter() - started < timeout_s:
+        selector_js = json.dumps(str(selector or ""))
+        text_js = json.dumps(str(text or "").lower())
+        initial_js = json.dumps(str(initial_url or ""))
+        expression = f'''(function(){{
+{_BOOTSTRAP}
+var s=__mcpState();
+var state={{ready:document.readyState,url:location.href,title:document.title,rev:s.mutationRevision,resources:(performance.getEntriesByType('resource')||[]).length}};
+state.selector=({selector_js})?!!document.querySelector({selector_js}):false;
+state.text=({text_js})?String((document.body&&document.body.innerText)||'').toLowerCase().indexOf({text_js})>=0:false;
+state.url_changed=({initial_js})?location.href!=={initial_js}:false;
+return JSON.stringify(state);
+}})()'''
+        raw = _evaluate(target, expression, timeout_s=min(8.0, timeout_s))
+        polls += 1
+        try:
+            state = json.loads(raw)
+        except Exception:
+            state = {}
+        final_state = state
+        now = time.perf_counter()
+        if condition == "selector":
+            matched = bool(state.get("selector"))
+        elif condition == "text":
+            matched = bool(state.get("text"))
+        elif condition == "url_change":
+            matched = bool(state.get("url_changed"))
+        else:
+            signature = state.get("resources") if condition == "network_idle" else state.get("rev")
+            if signature != last_signature:
+                last_signature = signature
+                stable_since = now
+            stable_for_ms = (now - stable_since) * 1000
+            if condition == "network_idle":
+                matched = state.get("ready") == "complete" and stable_for_ms >= stable_ms
+            else:
+                matched = stable_for_ms >= stable_ms
+        if matched:
+            break
+        time.sleep(0.125)
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    result = {
+        "ok": bool(matched or not required),
+        "type": "wait",
+        "for": condition,
+        "matched": bool(matched),
+        "timed_out": not matched,
+        "required": bool(required),
+        "duration_ms": duration_ms,
+        "polls": polls,
+        "url": final_state.get("url"),
+        "title": final_state.get("title"),
+    }
+    if not matched and required:
+        result["error"] = f"Timed out waiting for {condition}"
+    return result
+
+
+def _normalize_extract_fields(fields: List[Any]) -> List[Dict[str, Any]]:
+    if not isinstance(fields, list) or not fields:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "extract fields must be a non-empty list")
+    if len(fields) > 20:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "extract supports at most 20 fields")
+    normalized: List[Dict[str, Any]] = []
+    for index, field in enumerate(fields):
+        if isinstance(field, str):
+            name = field.strip()
+            if not name:
+                continue
+            normalized.append({"name": name, "semantic": name, "all": True, "max_items": 2})
+        elif isinstance(field, dict):
+            item = dict(field)
+            item.setdefault("name", f"field_{index + 1}")
+            normalized.append(item)
+        else:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "extract fields must be strings or field objects")
+    if not normalized:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "extract fields cannot be empty")
+    return normalized
+
+
+def _extract_browser(tab_id: str, fields: List[Any], max_chars: int = 6000) -> Dict[str, Any]:
+    specs = _normalize_extract_fields(fields)
+    aliases = json.dumps(_SEMANTIC_EXTRACT_ALIASES, ensure_ascii=False)
+    specs_js = json.dumps(specs, ensure_ascii=False)
+    budget = max(256, min(int(max_chars), 20_000))
+    expression = f'''(function(){{
+var specs={specs_js},aliases={aliases},budget={budget},used=0,truncated=false,data={{}},counts={{}};
+function clean(v){{return String(v==null?'':v).replace(/\\s+/g,' ').trim();}}
+function norm(v){{return clean(v).toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/[ıİ]/g,'i');}}
+function visible(el){{try{{var s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)!==0&&r.width>1&&r.height>1;}}catch(e){{return false;}}}}
+function bounded(v){{v=clean(v);var remain=Math.max(0,budget-used);if(v.length>remain){{v=v.slice(0,remain);truncated=true;}}used+=v.length;return v;}}
+function read(el,attr){{attr=String(attr||'text');if(attr==='text')return clean(el.innerText||el.textContent||'');if(attr==='value')return clean(el.value);if(attr==='href')return clean(el.href||el.getAttribute('href'));if(attr==='html')return clean(el.innerHTML);return clean(el.getAttribute(attr));}}
+var candidates=Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,dt,dd,label,button,a,span,strong,b,small,div')).filter(visible).slice(0,6000).map(function(el){{return {{el:el,raw:clean(el.innerText||el.textContent||''),tag:String(el.tagName||'').toLowerCase()}};}}).filter(function(x){{return x.raw&&x.raw.length<=520;}});
+for(var i=0;i<specs.length;i++){{
+ var sp=specs[i]||{{}},name=String(sp.name||('field_'+i)),vals=[];
+ if(sp.selector){{
+   var els=[];try{{els=Array.from(document.querySelectorAll(String(sp.selector)));}}catch(e){{els=[];}}
+   var maxItems=Math.max(1,Math.min(Number(sp.max_items||20),100));vals=els.slice(0,maxItems).map(function(el){{return read(el,sp.attr);}}).filter(Boolean);counts[name]=els.length;
+ }} else {{
+   var key=norm(sp.semantic||name),terms=[sp.semantic||name];Object.keys(aliases).forEach(function(k){{var nk=norm(k);if(key===nk||key.indexOf(nk)>=0||nk.indexOf(key)>=0)terms=terms.concat(aliases[k]||[]);}});terms=terms.map(norm).filter(Boolean);
+   var ranked=[];
+   for(var c=0;c<candidates.length;c++){{var raw=candidates[c].raw,n=norm(raw),score=0;for(var t=0;t<terms.length;t++){{if(n===terms[t])score=Math.max(score,180);else if(n.indexOf(terms[t])>=0)score=Math.max(score,110+Math.min(30,terms[t].length));}}
+     if(key.indexOf('price')>=0||key.indexOf('fiyat')>=0){{if(/[₺€$£]|\\b(?:tl|try|eur|usd|gbp)\\b/i.test(raw)&&/\\d/.test(raw))score=Math.max(score,165);}}
+     if(key.indexOf('rating')>=0||key.indexOf('score')>=0||key.indexOf('puan')>=0){{if(/^\\s*(?:[0-9](?:[.,][0-9])?|10(?:[.,]0)?)\\s*(?:\\/\\s*(?:5|10))?\\s*$/.test(raw))score=Math.max(score,155);}}
+     if(score>0){{if(raw.length<=100)score+=20;ranked.push({{score:score,text:raw}});}}
+   }}
+   ranked.sort(function(a,b){{return b.score-a.score||a.text.length-b.text.length;}});var seen={{}},maxItems=Math.max(1,Math.min(Number(sp.max_items||2),20));for(var r=0;r<ranked.length&&vals.length<maxItems;r++){{var sig=norm(ranked[r].text);if(!seen[sig]){{seen[sig]=true;vals.push(ranked[r].text);}}}}counts[name]=vals.length;
+ }}
+ vals=vals.map(bounded);data[name]=sp.all===false?(vals[0]||null):vals;
+}}
+return JSON.stringify({{ok:true,type:'extract',url:location.href,title:document.title,data:data,matched_counts:counts,truncated:truncated,chars:used}});
+}})()'''
+    raw = _evaluate(_target(tab_id), expression, timeout_s=20)
+    try:
+        return json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not decode browser extract result: {exc}") from exc
+
+
+def browser_do(url: Optional[str] = None, actions: Optional[List[Dict[str, Any]]] = None,
+               tab_id: Optional[str] = None, new_tab: bool = True, activate: bool = True,
+               wait_after_open: bool = True, return_state: str = "none",
+               close_after: bool = False, debug: bool = False,
+               extract: Optional[List[Any]] = None) -> Dict[str, Any]:
+    started = time.perf_counter()
+    if close_after and not (url and new_tab):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed when browser_do opens a new tab")
+    requested_actions = list(actions or [])
+    automatic_actions = (1 if url and wait_after_open else 0) + (1 if extract is not None else 0)
+    if len(requested_actions) + automatic_actions > 20:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do supports at most 20 actions including automatic wait/extract")
+    return_state = str(return_state or "none").strip().lower()
+    if return_state not in {"none", "compact", "full"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full")
+
+    opened: Optional[Dict[str, Any]] = None
+    created_new_tab = False
+    current_tab = tab_id
+    initial_url = None
+    final_url: Optional[str] = None
+    final_title: Optional[str] = None
+    results: List[Dict[str, Any]] = []
+    data: Dict[str, Any] = {}
+
+    if url:
+        opened = browser_open_url(url=url, tab_id=current_tab, new_tab=new_tab, activate=activate)
+        current_tab = str(opened.get("tab_id") or current_tab or "")
+        created_new_tab = bool(opened.get("new_tab"))
+        initial_url = str(url)
+        final_url = str(opened.get("url") or url)
+        if wait_after_open:
+            waited = _wait_browser(current_tab, "network_idle", timeout_s=15, required=False)
+            results.append(waited)
+            final_url = waited.get("url") or final_url
+            final_title = waited.get("title") or final_title
+    elif not current_tab:
+        current_tab = str(_target().get("id"))
+
+    for action in requested_actions:
+        action_type = str(action.get("type") or "").strip().lower().replace("-", "_")
+        if action_type == "wait":
+            result = _wait_browser(
+                current_tab,
+                condition=str(action.get("for") or action.get("condition") or "network_idle"),
+                timeout_s=float(action.get("timeout_s", 10)),
+                selector=action.get("selector"), text=action.get("text"),
+                initial_url=str(action.get("initial_url") or initial_url or ""),
+                stable_ms=int(action.get("stable_ms", 500)),
+                required=bool(action.get("required", True)),
+            )
+        elif action_type == "extract":
+            result = _extract_browser(current_tab, action.get("fields") or [], int(action.get("max_chars", 6000)))
+            if isinstance(result.get("data"), dict):
+                data.update(result["data"])
+        else:
+            result = browser_act([action], tab_id=current_tab, return_state="none")
+            # Flatten the single semantic action so browser_do debug output stays compact.
+            if isinstance(result.get("actions"), list) and result["actions"]:
+                action_result = dict(result["actions"][0])
+                action_result.setdefault("url", result.get("url"))
+                action_result.setdefault("title", result.get("title"))
+                result = action_result
+        results.append(result)
+        final_url = result.get("url") or final_url
+        final_title = result.get("title") or final_title
+        if result.get("ok") is False:
+            break
+
+    if extract is not None and (not results or results[-1].get("ok") is not False):
+        extracted = _extract_browser(current_tab, extract, 6000)
+        results.append(extracted)
+        final_url = extracted.get("url") or final_url
+        final_title = extracted.get("title") or final_title
+        if isinstance(extracted.get("data"), dict):
+            data.update(extracted["data"])
+    elif not requested_actions and extract is None and (not results or results[-1].get("ok") is not False):
+        extracted = _extract_browser(current_tab, [
+            {"name": "h1", "selector": "h1", "attr": "text", "all": False, "max_items": 1},
+            {"name": "paragraphs", "selector": "p", "attr": "text", "all": True, "max_items": 20},
+        ], 3000)
+        results.append(extracted)
+        final_url = extracted.get("url") or final_url
+        final_title = extracted.get("title") or final_title
+        data.update(extracted.get("data") or {})
+
+    state = None
+    if return_state != "none" and current_tab:
+        state = browser_observe(
+            scope="interactive" if return_state == "compact" else "visible",
+            max_elements=40 if return_state == "compact" else 120,
+            visual="none", tab_id=current_tab,
+        )
+
+    closed = False
+    if close_after:
+        if not created_new_tab or not current_tab:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do did not create the tab it was asked to close")
+        closed = bool(browser_close_tab(current_tab).get("closed"))
+
+    ok = all(item.get("ok", True) is not False for item in results)
+    compact: Dict[str, Any] = {
+        "ok": ok,
+        "data": data,
+        "url": ((state or {}).get("url") if isinstance(state, dict) else None) or final_url,
+        "title": ((state or {}).get("title") if isinstance(state, dict) else None) or final_title,
+        "tab_id": current_tab,
+        "action_count": len(results),
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+        "closed": closed,
+    }
+    if opened:
+        compact["opened"] = {k: opened.get(k) for k in ("tab_id", "url", "new_tab")}
+    errors = [
+        {k: item.get(k) for k in ("type", "error", "for", "timed_out") if item.get(k) is not None}
+        for item in results if item.get("ok") is False
+    ]
+    if errors:
+        compact["errors"] = errors
+    if state is not None:
+        compact["state"] = state
+    if debug:
+        compact["actions"] = results
+    return compact
