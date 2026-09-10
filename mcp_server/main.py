@@ -238,7 +238,7 @@ def create_app():
 
     # ── Semantic headed-Chromium tools (CDP + DOM, still visible in VNC) ──
     @mcp.tool(name="browser_list_tabs",
-              description="List inspectable tabs in the visible Cloud MCP Chromium using localhost Chrome DevTools Protocol.")
+              description="List inspectable Chromium tabs. tab_id is a stable handle across tab reordering; busy=true means another caller currently holds that tab lease.")
     async def _browser_list_tabs() -> Dict[str, Any]:
         return await _log_async(audit_logger, "browser_list_tabs", browser_list_tabs)
 
@@ -253,7 +253,7 @@ def create_app():
         return await _log_async(audit_logger, "browser_close_tab", lambda: browser_close_tab(tab_id))
 
     @mcp.tool(name="browser_observe", structured_output=False,
-              description="Observe the visible Chromium tab semantically. Returns stable e1/e2 element IDs, tag/role/text/value/checked/options and DOM bounding boxes; visual can be none, viewport, element, or full_page.")
+              description="Observe a specific Chromium tab semantically in the background without switching tabs or stealing desktop focus. Returns stable e1/e2 element IDs and optional viewport/element/full-page visual.")
     async def _browser_observe(scope: str = "interactive", max_elements: int = 40,
                                visual: str = "none", element_id: Optional[str] = None,
                                tab_id: Optional[str] = None) -> Any:
@@ -269,29 +269,30 @@ def create_app():
                                 lambda: browser_find(query=query, role=role, text=text, tab_id=tab_id, max_results=max_results, actionable_only=actionable_only))
 
     @mcp.tool(name="browser_act",
-              description="Perform up to 20 semantic actions in the visible Chromium tab using element_id or query/role/text targeting. Supports click, double_click, type/paste, select, check/uncheck, scroll and focus with observation_id stale protection.")
+              description="Perform up to 20 semantic actions directly against one Chromium tab by stable tab_id without activating it. Same-tab concurrent callers fail fast with retryable tab_busy; different tabs may run in parallel.")
     async def _browser_act(actions: List[Dict[str, Any]], observation_id: Optional[str] = None,
                            tab_id: Optional[str] = None, return_state: str = "compact") -> Dict[str, Any]:
         return await _log_async(audit_logger, "browser_act",
                                 lambda: browser_act(actions=actions, observation_id=observation_id, tab_id=tab_id, return_state=return_state))
 
     @mcp.tool(name="browser_open_url",
-              description="Navigate the selected visible Chromium tab over localhost CDP; Chromium remains headed and visible in VNC.")
+              description="Navigate or create a headed Chromium tab over CDP. New tabs stay in the background by default and do not steal the user's current tab/desktop focus; set background=false only when foreground selection is explicitly wanted.")
     async def _browser_open_url(url: str, tab_id: Optional[str] = None, new_tab: bool = False,
-                                activate: bool = True) -> Dict[str, Any]:
+                                background: bool = True, activate: Optional[bool] = None) -> Dict[str, Any]:
         return await _log_async(audit_logger, "browser_open_url",
-                                lambda: browser_open_url(url=url, tab_id=tab_id, new_tab=new_tab, activate=activate))
+                                lambda: browser_open_url(url=url, tab_id=tab_id, new_tab=new_tab,
+                                                         background=background, activate=activate))
 
     @mcp.tool(name="browser_do",
-              description="Preferred one-call headed Chromium transaction: optionally open a URL/tab, wait for readiness, perform semantic actions, extract compact page data, return optional state, and optionally close only the tab it created.")
+              description="Preferred one-call headed Chromium transaction. Runs in a stable leased tab and stays background-safe by default, so parallel research tabs do not switch the user's active tab. Same-tab contention returns retryable tab_busy.")
     async def _browser_do(url: Optional[str] = None, actions: Optional[List[Dict[str, Any]]] = None,
-                          tab_id: Optional[str] = None, new_tab: bool = True, activate: bool = True,
-                          wait_after_open: bool = True, return_state: str = "none",
-                          close_after: bool = False, debug: bool = False,
-                          extract: Optional[List[Any]] = None) -> Dict[str, Any]:
+                          tab_id: Optional[str] = None, new_tab: bool = True, background: bool = True,
+                          activate: Optional[bool] = None, wait_after_open: bool = True,
+                          return_state: str = "none", close_after: bool = False,
+                          debug: bool = False, extract: Optional[List[Any]] = None) -> Dict[str, Any]:
         return await _log_async(audit_logger, "browser_do",
                                 lambda: browser_do(url=url, actions=actions, tab_id=tab_id,
-                                                   new_tab=new_tab, activate=activate,
+                                                   new_tab=new_tab, background=background, activate=activate,
                                                    wait_after_open=wait_after_open,
                                                    return_state=return_state,
                                                    close_after=close_after, debug=debug,

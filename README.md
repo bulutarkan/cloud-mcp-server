@@ -108,6 +108,14 @@ Browser tools:
 
 `browser_do` actions may include the normal semantic `browser_act` actions plus `wait`. Wait conditions include `network_idle`, `dom_stable`, `selector`, `text`, and `url_change`. The `extract` argument accepts semantic fields such as `price`, `cancellation`, `parking`, `rating`, `breakfast`, `payment`, `location`, `distance`, `availability`, `checkin`, and `checkout`, or explicit selector field objects. This keeps common research/form workflows inside one MCP round trip while the browser remains fully headed and visible in VNC.
 
+### Background tab isolation
+
+Semantic Chromium operations are **background-safe by default**. `browser_open_url` and `browser_do` create new tabs with `background=true` unless foreground activation is explicitly requested. DOM observation, actions, extraction, waits, and DOM-rasterized screenshots operate directly against the stable CDP `tab_id` without selecting that tab or bringing Chromium to the front. This lets a person keep working in one Chromium tab (or even another desktop app) while one or more agents research in separate tabs.
+
+Each stable `tab_id` also has a fail-fast exclusive lease. If another caller is already using that exact tab, the second caller receives HTTP `409` with `error: "tab_busy"`, `retryable: true`, and a short retry hint instead of queueing behind or taking over the first caller's work. Different tabs remain independently usable in parallel, and `browser_list_tabs` reports `busy: true` while a tab is leased.
+
+`browser_observe` visuals use a bundled DOM rasterizer rather than activating a background tab for a native browser screenshot. The returned metadata reports `background_safe`, `tab_activated`, and `capture_method` so callers can verify that the user's foreground was not taken over.
+
 Example:
 
 ```text
