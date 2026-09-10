@@ -15,6 +15,7 @@ It is designed for Ubuntu/Linux servers such as Oracle Cloud, DigitalOcean, Hetz
 - Read, write, edit, move, copy, delete files
 - List processes and kill processes
 - Check CPU, RAM, disk, network, and uptime
+- Control a real Linux X11/VNC desktop with screenshots, mouse, keyboard, scrolling, window focus, drag, and headed Chromium
 - Run long commands as background jobs with logs
 - Delegate long tasks to OpenCode or Codex agents in the background
 - Run parallel commands
@@ -53,6 +54,64 @@ Your app will run locally on:
 
 ```text
 http://127.0.0.1:8000
+```
+
+
+## Real Linux desktop + headed Chromium
+
+Cloud MCP can control a **real X11 desktop** such as an XFCE session running inside TigerVNC. This is not a headless Playwright browser: the assistant receives an actual desktop screenshot, reasons about what is visible, and sends real X11 mouse/keyboard events to the same GUI you can watch over VNC.
+
+Typical uses include operating Chromium from your phone through ChatGPT, handling websites that require a normal persistent browser session, and interacting with other allow-listed desktop apps.
+
+### Install the optional desktop dependencies
+
+```bash
+cd /home/ubuntu/cloud-mcp-server
+./scripts/install-desktop.sh
+```
+
+If the server does not yet have XFCE/TigerVNC packages, install them too without automatically exposing a VNC port:
+
+```bash
+./scripts/install-desktop.sh --with-vnc-packages
+```
+
+The helper installs `xdotool`, `wmctrl`, `xclip`, ImageMagick, DBus X11 support, and Chromium when needed. It deliberately does **not** publish or configure a public VNC listener. Keep VNC on localhost/SSH or a private VPN such as Tailscale.
+
+Configure the display in `mcp_server/.env`:
+
+```env
+CLOUD_MCP_DESKTOP_DISPLAY=:1
+CLOUD_MCP_DESKTOP_XAUTHORITY=/home/ubuntu/.Xauthority
+# Optional overrides:
+# CLOUD_MCP_CHROMIUM_BIN=/snap/bin/chromium
+# CLOUD_MCP_CHROMIUM_PROFILE=/home/ubuntu/snap/chromium/common/cloud-mcp-profile
+```
+
+For Chromium Snap, the default Cloud MCP profile is persistent under `~/snap/chromium/common/cloud-mcp-profile`. Closing Chromium or restarting the MCP does not delete that profile, so cookies, site storage, browsing state, and authenticated sessions can survive restarts.
+
+The desktop tools are:
+
+- `desktop_capabilities` — verify the X11 display, input/screenshot dependencies, Chromium path/profile, and password-store safety status.
+- `desktop_observe` — return window metadata plus a connector-safe JPEG of the real desktop. It also reports the screenshot-to-display coordinate scale for accurate clicks.
+- `desktop_windows` / `desktop_focus` — list and focus real X11 windows.
+- `desktop_move_mouse`, `desktop_click`, `desktop_drag`, `desktop_type`, `desktop_key`, `desktop_scroll` — real mouse/keyboard input.
+- `desktop_act` — batch up to 30 GUI actions in one call and optionally return a fresh screenshot/state, reducing remote round trips.
+- `desktop_launch` — launch an allow-listed GUI app (`chromium`, `firefox`, or `terminal`).
+- `chromium_launch` / `chromium_open_url` / `chromium_close` — manage visible Chromium while preserving its persistent profile. URL navigation uses the real address bar (`Ctrl+L`, paste, Enter).
+
+A normal visual workflow is `desktop_observe` → decide where to interact → `desktop_act` → inspect the returned screenshot. The browser remains visible in VNC the entire time.
+
+### Chromium profile and password security
+
+A persistent browser profile is effectively a credential because it can contain authenticated cookies. Protect the server account, the MCP endpoint, and the VNC session accordingly.
+
+On Ubuntu Chromium Snap, `desktop_capabilities` checks whether the Snap `password-manager-service` interface is backed by a desktop secret service. If it reports `mode: basic`, Chromium's launcher is using its **non-encrypted basic saved-password store**. Cookies/site sessions still persist, but do not use Chromium's "save password" feature until you configure a desktop keyring/secret service. Cloud MCP does not weaken or bypass this protection automatically.
+
+If an aggressive `/tmp` cleanup script removes `/tmp/snap-private-tmp`, Chromium Snap may fail before opening. Exclude that directory from custom cleanup jobs or restore the required root-owned directory:
+
+```bash
+sudo install -d -m 0700 -o root -g root /tmp/snap-private-tmp
 ```
 
 ## Configure your `.env`

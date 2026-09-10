@@ -38,6 +38,11 @@ from .tools_skills import (
     skill_list, skill_search, skill_get, skill_register, skill_update_index,
 )
 from .tools_update import cloud_mcp_self_deploy, cloud_mcp_deploy_status
+from .tools_desktop import (
+    desktop_capabilities, desktop_observe, desktop_windows, desktop_focus,
+    desktop_move_mouse, desktop_click, desktop_type, desktop_key, desktop_scroll, desktop_drag, desktop_act,
+    desktop_launch, chromium_launch, chromium_open_url, chromium_close,
+)
 
 
 def _log(audit_logger, tool: str, fn):
@@ -127,6 +132,106 @@ def create_app():
                     return resp
 
             return await call_next(request)
+
+    # ── Linux desktop / real-GUI browser tools ─────────────────────────────
+    @mcp.tool(name="desktop_capabilities",
+              description="Check whether the real X11/VNC desktop, screenshot, mouse/keyboard and Chromium controls are available.")
+    async def _desktop_capabilities() -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_capabilities", desktop_capabilities)
+
+    @mcp.tool(name="desktop_observe",
+              description="Observe the real Linux VNC/X11 desktop. Returns window metadata and, by default, a screenshot image the model can see.",
+              structured_output=False)
+    async def _desktop_observe(include_screenshot: bool = True,
+                               window_id: Optional[str] = None) -> Any:
+        return await _log_async(audit_logger, "desktop_observe",
+                                lambda: desktop_observe(include_screenshot=include_screenshot, window_id=window_id))
+
+    @mcp.tool(name="desktop_windows",
+              description="List visible X11 windows with IDs, titles, classes, PIDs and screen geometry. Optional title/class filters.")
+    async def _desktop_windows(title: Optional[str] = None,
+                               wm_class: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_windows",
+                                lambda: desktop_windows(title=title, wm_class=wm_class))
+
+    @mcp.tool(name="desktop_focus",
+              description="Focus a real desktop window by window_id or by matching title/class.")
+    async def _desktop_focus(window_id: Optional[str] = None, title: Optional[str] = None,
+                             wm_class: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_focus",
+                                lambda: desktop_focus(window_id=window_id, title=title, wm_class=wm_class))
+
+    @mcp.tool(name="desktop_move_mouse",
+              description="Move the real X11 mouse pointer to absolute screen coordinates.")
+    async def _desktop_move_mouse(x: int, y: int) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_move_mouse",
+                                lambda: desktop_move_mouse(x=x, y=y))
+
+    @mcp.tool(name="desktop_click",
+              description="Click the real Linux desktop at absolute screen coordinates. button: left, middle, right.")
+    async def _desktop_click(x: int, y: int, button: str = "left",
+                             click_count: int = 1) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_click",
+                                lambda: desktop_click(x=x, y=y, button=button, click_count=click_count))
+
+    @mcp.tool(name="desktop_type",
+              description="Type text into the focused real GUI control using the X11 clipboard; supports Unicode/Turkish text.")
+    async def _desktop_type(text: str, clear: bool = False,
+                            restore_clipboard: bool = True) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_type",
+                                lambda: desktop_type(text=text, clear=clear, restore_clipboard=restore_clipboard))
+
+    @mcp.tool(name="desktop_key",
+              description="Press a real keyboard key or xdotool key combo such as Return, Escape, ctrl+l, ctrl+a or alt+Tab.")
+    async def _desktop_key(keys: str, repeat: int = 1) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_key",
+                                lambda: desktop_key(keys=keys, repeat=repeat))
+
+    @mcp.tool(name="desktop_scroll",
+              description="Scroll the real desktop. Positive amount scrolls down/right; negative scrolls up/left. Optional x/y moves pointer first.")
+    async def _desktop_scroll(amount: int, x: Optional[int] = None, y: Optional[int] = None,
+                              horizontal: bool = False) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_scroll",
+                                lambda: desktop_scroll(amount=amount, x=x, y=y, horizontal=horizontal))
+
+    @mcp.tool(name="desktop_drag",
+              description="Drag with the real X11 mouse from one absolute display coordinate to another.")
+    async def _desktop_drag(start_x: int, start_y: int, end_x: int, end_y: int,
+                            duration_ms: int = 500) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_drag",
+                                lambda: desktop_drag(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y, duration_ms=duration_ms))
+
+    @mcp.tool(name="desktop_act",
+              description="Perform up to 30 real GUI actions as one bounded batch (move, click, double_click, type, key/shortcut, scroll, focus, drag, sleep), then optionally return a fresh screenshot/state.",
+              structured_output=False)
+    async def _desktop_act(actions: List[Dict[str, Any]], return_state: bool = True,
+                           include_screenshot: bool = True, stop_on_error: bool = True) -> Any:
+        return await _log_async(audit_logger, "desktop_act",
+                                lambda: desktop_act(actions=actions, return_state=return_state, include_screenshot=include_screenshot, stop_on_error=stop_on_error))
+
+    @mcp.tool(name="desktop_launch",
+              description="Launch an allow-listed GUI app on the real VNC desktop: chromium, firefox, or terminal.")
+    async def _desktop_launch(app: str, url_or_arg: Optional[str] = None) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "desktop_launch",
+                                lambda: desktop_launch(app=app, url_or_arg=url_or_arg))
+
+    @mcp.tool(name="chromium_launch",
+              description="Launch visible Chromium on the real X11/VNC desktop with a persistent profile so sessions survive window/process restarts.")
+    async def _chromium_launch(url: str = "about:blank", new_window: bool = True) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "chromium_launch",
+                                lambda: chromium_launch(url=url, new_window=new_window))
+
+    @mcp.tool(name="chromium_open_url",
+              description="Open a URL in visible Chromium through the real GUI address bar (Ctrl+L, paste, Enter), not Playwright/headless automation.")
+    async def _chromium_open_url(url: str, new_window: bool = False) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "chromium_open_url",
+                                lambda: chromium_open_url(url=url, new_window=new_window))
+
+    @mcp.tool(name="chromium_close",
+              description="Gracefully close the active/selected Chromium window while preserving its persistent profile. Set all_windows=true to close all Chromium windows.")
+    async def _chromium_close(window_id: Optional[str] = None, all_windows: bool = False) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "chromium_close",
+                                lambda: chromium_close(window_id=window_id, all_windows=all_windows))
 
     # ── Terminal tools ──────────────────────────────────────────────────────
     @mcp.tool(name="run_command",
