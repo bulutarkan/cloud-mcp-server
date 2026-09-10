@@ -16,6 +16,13 @@ def managed_relpaths(repo: Path) -> List[Path]:
     req = Path("mcp_server/requirements.txt")
     if (repo / req).exists():
         files.append(req)
+    vendor = repo / "mcp_server" / "vendor"
+    if vendor.exists():
+        files.extend(
+            p.relative_to(repo)
+            for p in sorted(vendor.rglob("*"))
+            if p.is_file() and "__pycache__" not in p.parts
+        )
     return files
 
 
