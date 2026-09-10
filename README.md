@@ -90,6 +90,29 @@ CLOUD_MCP_DESKTOP_XAUTHORITY=/home/ubuntu/.Xauthority
 
 For Chromium Snap, the default Cloud MCP profile is persistent under `~/snap/chromium/common/cloud-mcp-profile`. Closing Chromium or restarting the MCP does not delete that profile, so cookies, site storage, browsing state, and authenticated sessions can survive restarts.
 
+### Semantic Chromium DOM control
+
+In addition to raw desktop screenshots and coordinate input, headed Chromium exposes a localhost-only Chrome DevTools Protocol endpoint. Cloud MCP uses it directly (no Playwright and no headless browser) to inspect the DOM of the same visible Chromium window you see over VNC.
+
+`browser_observe` returns stable `e1`, `e2`, ... element IDs with tag, ARIA role, text, placeholder, current value, checked state, select options, and viewport/document rectangles. `browser_act` can then target those IDs (or semantic query/role/text matches) for click, double-click, type/paste, select, check/uncheck, scroll, and focus actions. `observation_id` protects against stale page observations after navigation/reload.
+
+Browser tools:
+
+- `browser_list_tabs` — list inspectable headed Chromium tabs and stable CDP tab IDs.
+- `browser_activate_tab` / `browser_close_tab` — activate or close a tab by tab ID.
+- `browser_observe` — semantic DOM observation with optional viewport/element/full-page JPEG.
+- `browser_find` — exact-first semantic element lookup.
+- `browser_act` — batch up to 20 element-targeted actions.
+- `browser_open_url` — navigate a selected tab or create a new visible tab.
+
+The DevTools listener is bound to `127.0.0.1` only. Override its local port if needed:
+
+```env
+CLOUD_MCP_CHROMIUM_DEBUG_PORT=9222
+```
+
+Keep this port firewalled/private; Cloud MCP never needs to expose it through Nginx or the public Internet. For browser tasks, prefer `browser_observe`/`browser_act`; use `desktop_observe`/`desktop_act` as the visual/native fallback for browser chrome, OS dialogs, captchas, extensions, or non-browser applications.
+
 The desktop tools are:
 
 - `desktop_capabilities` — verify the X11 display, input/screenshot dependencies, Chromium path/profile, and password-store safety status.

@@ -88,6 +88,8 @@ def desktop_capabilities() -> Dict[str, Any]:
         "chromium": chromium,
         "chromium_profile": str(_chromium_profile()),
         "chromium_password_store": password_store,
+        "chromium_debug_port": _chromium_debug_port(),
+        "chromium_debug_url": f"http://127.0.0.1:{_chromium_debug_port()}",
         "error": error,
     }
 
@@ -501,6 +503,13 @@ def _chromium_password_store_status(executable: Optional[str] = None) -> Dict[st
     except Exception as exc:
         return {"mode": "unknown", "encrypted": None, "error": str(exc)}
 
+def _chromium_debug_port() -> int:
+    try:
+        return int(os.getenv("CLOUD_MCP_CHROMIUM_DEBUG_PORT", "9222"))
+    except ValueError:
+        return 9222
+
+
 def _chromium_profile() -> Path:
     configured = os.getenv("CLOUD_MCP_CHROMIUM_PROFILE", "").strip()
     if configured:
@@ -545,6 +554,8 @@ def chromium_launch(url: str = "about:blank", new_window: bool = True) -> Dict[s
     args = [
         executable,
         f"--user-data-dir={profile}",
+        f"--remote-debugging-port={_chromium_debug_port()}",
+        "--remote-debugging-address=127.0.0.1",
         "--no-first-run",
         "--no-default-browser-check",
     ]
@@ -584,6 +595,8 @@ def chromium_launch(url: str = "about:blank", new_window: bool = True) -> Dict[s
         "profile": str(profile),
         "persistent_profile": True,
         "created_new_window": bool(created),
+        "debug_port": _chromium_debug_port(),
+        "semantic_browser_ready": True,
         "window": target,
     }
 

@@ -43,6 +43,9 @@ from .tools_desktop import (
     desktop_move_mouse, desktop_click, desktop_type, desktop_key, desktop_scroll, desktop_drag, desktop_act,
     desktop_launch, chromium_launch, chromium_open_url, chromium_close,
 )
+from .tools_browser_semantic import (
+    browser_list_tabs, browser_activate_tab, browser_close_tab, browser_observe, browser_find, browser_act, browser_open_url,
+)
 
 
 def _log(audit_logger, tool: str, fn):
@@ -232,6 +235,52 @@ def create_app():
     async def _chromium_close(window_id: Optional[str] = None, all_windows: bool = False) -> Dict[str, Any]:
         return await _log_async(audit_logger, "chromium_close",
                                 lambda: chromium_close(window_id=window_id, all_windows=all_windows))
+
+    # ── Semantic headed-Chromium tools (CDP + DOM, still visible in VNC) ──
+    @mcp.tool(name="browser_list_tabs",
+              description="List inspectable tabs in the visible Cloud MCP Chromium using localhost Chrome DevTools Protocol.")
+    async def _browser_list_tabs() -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_list_tabs", browser_list_tabs)
+
+    @mcp.tool(name="browser_activate_tab",
+              description="Activate a visible Cloud MCP Chromium tab by stable CDP tab_id.")
+    async def _browser_activate_tab(tab_id: str) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_activate_tab", lambda: browser_activate_tab(tab_id))
+
+    @mcp.tool(name="browser_close_tab",
+              description="Close a visible Cloud MCP Chromium tab by stable CDP tab_id.")
+    async def _browser_close_tab(tab_id: str) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_close_tab", lambda: browser_close_tab(tab_id))
+
+    @mcp.tool(name="browser_observe", structured_output=False,
+              description="Observe the visible Chromium tab semantically. Returns stable e1/e2 element IDs, tag/role/text/value/checked/options and DOM bounding boxes; visual can be none, viewport, element, or full_page.")
+    async def _browser_observe(scope: str = "interactive", max_elements: int = 40,
+                               visual: str = "none", element_id: Optional[str] = None,
+                               tab_id: Optional[str] = None) -> Any:
+        return await _log_async(audit_logger, "browser_observe",
+                                lambda: browser_observe(scope=scope, max_elements=max_elements, visual=visual, element_id=element_id, tab_id=tab_id))
+
+    @mcp.tool(name="browser_find",
+              description="Find a rendered Chromium DOM element by semantic text/role and return the best stable element_id for browser_act.")
+    async def _browser_find(query: str, role: Optional[str] = None, text: Optional[str] = None,
+                            tab_id: Optional[str] = None, max_results: int = 5,
+                            actionable_only: bool = False) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_find",
+                                lambda: browser_find(query=query, role=role, text=text, tab_id=tab_id, max_results=max_results, actionable_only=actionable_only))
+
+    @mcp.tool(name="browser_act",
+              description="Perform up to 20 semantic actions in the visible Chromium tab using element_id or query/role/text targeting. Supports click, double_click, type/paste, select, check/uncheck, scroll and focus with observation_id stale protection.")
+    async def _browser_act(actions: List[Dict[str, Any]], observation_id: Optional[str] = None,
+                           tab_id: Optional[str] = None, return_state: str = "compact") -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_act",
+                                lambda: browser_act(actions=actions, observation_id=observation_id, tab_id=tab_id, return_state=return_state))
+
+    @mcp.tool(name="browser_open_url",
+              description="Navigate the selected visible Chromium tab over localhost CDP; Chromium remains headed and visible in VNC.")
+    async def _browser_open_url(url: str, tab_id: Optional[str] = None, new_tab: bool = False,
+                                activate: bool = True) -> Dict[str, Any]:
+        return await _log_async(audit_logger, "browser_open_url",
+                                lambda: browser_open_url(url=url, tab_id=tab_id, new_tab=new_tab, activate=activate))
 
     # ── Terminal tools ──────────────────────────────────────────────────────
     @mcp.tool(name="run_command",
