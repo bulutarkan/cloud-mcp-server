@@ -950,6 +950,30 @@ def _extract_codex_session(path: Path) -> Optional[str]:
     return None
 
 
+def _codex_access_args(access_mode: str, *, resume: bool = False) -> List[str]:
+    """Build Codex approval/sandbox args while keeping read-only MCP calls usable."""
+    sandbox_map = {
+        "read_only": "read-only",
+        "workspace_write": "workspace-write",
+        "full": "danger-full-access",
+    }
+    sandbox = sandbox_map[access_mode]
+    if access_mode == "read_only":
+        args = [
+            "--config", 'approval_policy="on-request"',
+            "--config", 'approvals_reviewer="auto_review"',
+        ]
+    else:
+        args = ["--config", 'approval_policy="never"']
+
+    # `codex exec resume` does not accept --sandbox, but it does accept config overrides.
+    if resume:
+        args += ["--config", f'sandbox_mode="{sandbox}"']
+    else:
+        args += ["--sandbox", sandbox]
+    return args
+
+
 def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path) -> List[str]:
     provider = meta["provider"]
     binary = meta["binary"]
@@ -968,8 +992,10 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         cmd.append(prompt)
         return cmd
 
+    access_mode = meta.get("access_mode", "workspace_write")
     if resume_session_id:
         cmd = [binary, "exec", "resume", "--json", "--skip-git-repo-check", "-o", str(result_path)]
+        cmd += _codex_access_args(access_mode, resume=True)
         if model:
             cmd += ["--model", model]
         if reasoning:
@@ -980,11 +1006,8 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     cmd = [
         binary, "exec", "--json", "--color", "never", "--skip-git-repo-check",
         "-C", meta["cwd"], "-o", str(result_path),
-        "--config", 'approval_policy="never"',
     ]
-    access_mode = meta.get("access_mode", "workspace_write")
-    sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
-    cmd += ["--sandbox", sandbox_map[access_mode]]
+    cmd += _codex_access_args(access_mode)
     if model:
         cmd += ["--model", model]
     if reasoning:

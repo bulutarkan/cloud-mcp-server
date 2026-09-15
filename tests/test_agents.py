@@ -48,6 +48,44 @@ class AgentOrchestrationTests(unittest.TestCase):
             )
         self.assertEqual(400, ctx.exception.status_code)
 
+
+    def test_codex_read_only_uses_auto_review_without_dropping_sandbox(self):
+        meta = {
+            "provider": "codex", "binary": "/usr/local/bin/codex", "cwd": "/tmp",
+            "access_mode": "read_only", "model": None, "reasoning": None,
+            "resume_session_id": None,
+        }
+        cmd = agents._build_provider_command(meta, "test", Path("/tmp/result.txt"))
+        self.assertIn('approval_policy="on-request"', cmd)
+        self.assertIn('approvals_reviewer="auto_review"', cmd)
+        self.assertIn("--sandbox", cmd)
+        self.assertEqual("read-only", cmd[cmd.index("--sandbox") + 1])
+        self.assertNotIn('approval_policy="never"', cmd)
+
+    def test_codex_resume_reapplies_read_only_policy(self):
+        meta = {
+            "provider": "codex", "binary": "/usr/local/bin/codex", "cwd": "/tmp",
+            "access_mode": "read_only", "model": None, "reasoning": None,
+            "resume_session_id": "session-123",
+        }
+        cmd = agents._build_provider_command(meta, "resume test", Path("/tmp/result.txt"))
+        self.assertIn('approval_policy="on-request"', cmd)
+        self.assertIn('approvals_reviewer="auto_review"', cmd)
+        self.assertIn('sandbox_mode="read-only"', cmd)
+        self.assertNotIn("--sandbox", cmd)
+
+    def test_codex_write_modes_keep_noninteractive_policy(self):
+        for mode, sandbox in (("workspace_write", "workspace-write"), ("full", "danger-full-access")):
+            meta = {
+                "provider": "codex", "binary": "/usr/local/bin/codex", "cwd": "/tmp",
+                "access_mode": mode, "model": None, "reasoning": None,
+                "resume_session_id": None,
+            }
+            cmd = agents._build_provider_command(meta, "test", Path("/tmp/result.txt"))
+            self.assertIn('approval_policy="never"', cmd)
+            self.assertEqual(sandbox, cmd[cmd.index("--sandbox") + 1])
+            self.assertNotIn('approvals_reviewer="auto_review"', cmd)
+
     def test_public_meta_has_progress_fields(self):
         meta = {
             "status":"running", "started_at":10.0, "spawn_requested_at":10.0,
